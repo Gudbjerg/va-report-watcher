@@ -3,17 +3,18 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
- "scripts": {
-  "start": "node index.js"
-},
+  "scripts": {
+    "start": "node index.js"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "dotenv": "^16.5.0",
+    "express": "^5.1.0",
     "fs": "^0.0.1-security",
     "node-cron": "^4.0.7",
     "nodemailer": "^7.0.3",
-    "puppeteer": "^24.9.0"
+    "puppeteer": "^18.2.1"
   }
 }
