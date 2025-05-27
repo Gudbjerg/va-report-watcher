@@ -1,20 +1,19 @@
 require('dotenv').config();
 const fetch = require('node-fetch');
 const cheerio = require('cheerio');
-const fs = require('fs');
 const https = require('https');
 const cron = require('node-cron');
 const nodemailer = require('nodemailer');
 const express = require('express');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const BASE_URL = 'https://www.va.gov/opal/nac/csas/index.asp';
-const STORAGE_FILE = './lastReport.json';
 const FILE_DOWNLOAD = './latest.xlsx';
 
-['EMAIL_USER', 'EMAIL_PASS', 'EMAIL_TO'].forEach(key => {
+['EMAIL_USER', 'EMAIL_PASS', 'EMAIL_TO', 'SUPABASE_URL', 'SUPABASE_KEY'].forEach(key => {
   if (!process.env[key]) {
     throw new Error(`Missing ENV: ${key}`);
   }
@@ -27,6 +26,8 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_PASS
   }
 });
+
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 const retry = async (fn, attempts = 3) => {
   for (let i = 0; i < attempts; i++) {
@@ -58,26 +59,18 @@ async function fetchLatestReport() {
   return { month: match ? match[1] : null, href: link ? new URL(link, BASE_URL).href : null };
 }
 
-function getLastSavedReport() {
-    if (!fs.existsSync(STORAGE_FILE)) return null;
-    const data = fs.readFileSync(STORAGE_FILE, 'utf8').trim();
-    if (!data) return null;
-    try {
-      return JSON.parse(data).month;
-    } catch (err) {
-      console.warn('[⚠️] Invalid JSON in storage file, ignoring:', err.message);
-      return null;
-    }
-  }
-  
+async function getLastSavedReport() {
+  const { data, error } = await supabase.from('va_report').select('month').eq('id', 1).single();
+  return error ? null : data.month;
+}
 
-function saveLatestReport(month) {
-  fs.writeFileSync(STORAGE_FILE, JSON.stringify({ month }, null, 2));
+async function saveLatestReport(month) {
+  await supabase.from('va_report').upsert({ id: 1, month });
 }
 
 function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
+    const file = require('fs').createWriteStream(dest);
     https.get(url, response => {
       if (response.statusCode !== 200) {
         return reject(new Error(`Failed to get '${url}' (${response.statusCode})`));
@@ -96,26 +89,26 @@ async function notifyNewReport(url, filePath) {
     text: `A new report is available: ${url}`,
     attachments: filePath ? [{ filename: 'summary.xlsx', path: filePath }] : []
   });
-  console.log(`[\uD83D\uDCE7] Email sent for new report: ${url}`);
+  console.log(`[📧] Email sent for new report: ${url}`);
 }
 
 async function checkForUpdate() {
   try {
-    console.log('[\uD83D\uDD0D] Checking for updated month...');
+    console.log('[🔍] Checking for updated month...');
     const result = await fetchLatestReport();
     const reportedMonth = result.month;
     const fileUrl = result.href;
-    if (!reportedMonth) return console.log('[\u274C] Could not find report month on page.');
+    if (!reportedMonth) return console.log('[❌] Could not find report month on page.');
 
     const now = new Date();
     now.setMonth(now.getMonth() - 1);
     const expectedMonth = now.toLocaleString('default', { month: 'long' });
 
     if (reportedMonth.toLowerCase() !== expectedMonth.toLowerCase()) {
-      return console.log(`[\u23F3] Report not updated yet. Found "${reportedMonth}", expected "${expectedMonth}".`);
+      return console.log(`[⏳] Report not updated yet. Found "${reportedMonth}", expected "${expectedMonth}".`);
     }
 
-    const lastMonthSaved = getLastSavedReport();
+    const lastMonthSaved = await getLastSavedReport();
     if (reportedMonth !== lastMonthSaved) {
       console.log(`[✅] New month detected: ${reportedMonth}`);
       let filePath = null;
@@ -128,12 +121,12 @@ async function checkForUpdate() {
         }
       }
       await retry(() => notifyNewReport(fileUrl || BASE_URL, filePath));
-      saveLatestReport(reportedMonth);
+      await saveLatestReport(reportedMonth);
     } else {
       console.log(`[🟰] Report already recorded for ${reportedMonth}`);
     }
   } catch (err) {
-    console.log(`[\uD83D\uDD25] Error checking for update: ${err}`);
+    console.log(`[🔥] Error checking for update: ${err}`);
   }
 }
 
