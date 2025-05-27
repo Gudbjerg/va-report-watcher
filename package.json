@@ -1,13 +1,13 @@
 {
   "name": "va-report-watcher",
   "version": "1.0.0",
-  "description": "Scrapes VA site for new hearing aid reports, emails updates",
+  "description": "Scrapes VA.gov for new hearing aid reports and sends email alerts.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "keywords": ["va", "watcher", "report", "email", "node"],
-  "author": "",
+  "keywords": ["va", "scraper", "email", "node", "cheerio"],
+  "author": "Gudbjerg",
   "license": "MIT",
   "dependencies": {
     "cheerio": "^1.0.0-rc.12",
