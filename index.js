@@ -4,12 +4,15 @@ const fs = require('fs');
 const cron = require('node-cron');
 const nodemailer = require('nodemailer');
 const express = require('express');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const URL = 'https://www.va.gov/opal/nac/csas/index.asp';
 const STORAGE_FILE = './lastReport.json';
+const LOG_FILE = './log.json';
+const REPORT_FILE = './public/latest.xlsx';
 
 ['EMAIL_USER', 'EMAIL_PASS', 'EMAIL_TO'].forEach(key => {
   if (!process.env[key]) {
@@ -25,13 +28,21 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+function logMessage(message) {
+  const timestamp = new Date().toISOString();
+  const entry = { timestamp, message };
+  const logs = fs.existsSync(LOG_FILE) ? JSON.parse(fs.readFileSync(LOG_FILE)) : [];
+  logs.unshift(entry);
+  fs.writeFileSync(LOG_FILE, JSON.stringify(logs.slice(0, 50), null, 2));
+}
+
 async function fetchLatestReport() {
   const browser = await puppeteer.launch({
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
   const page = await browser.newPage();
-  await page.goto(URL, { waitUntil: 'networkidle2' });
+  await page.goto(URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
   const result = await page.evaluate(() => {
     const para = Array.from(document.querySelectorAll('p'))
@@ -41,6 +52,14 @@ async function fetchLatestReport() {
     const match = para.textContent.match(/\((January|February|March|April|May|June|July|August|September|October|November|December)\)/i);
     return match ? match[1] : null;
   });
+
+  const [link] = await page.$$eval('a[href$="summaryVAhearingAidProcurement.xlsx"]', links => links.map(a => a.href));
+
+  if (link) {
+    const viewSource = await page.goto(link);
+    fs.writeFileSync(REPORT_FILE, await viewSource.buffer());
+    logMessage('Downloaded new report and saved to public directory');
+  }
 
   await browser.close();
   return result;
@@ -63,45 +82,63 @@ async function notifyNewReport(newUrl) {
     subject: 'New VA Hearing Aid Report Available',
     text: `A new report is available:\n${newUrl}`
   });
-  console.log(`[📧] Email sent for new report: ${newUrl}`);
+  logMessage(`Email sent for new report: ${newUrl}`);
 }
 
 async function checkForUpdate() {
   try {
-    console.log('[🔍] Checking for updated month...');
+    logMessage('Checking for updated month...');
     const reportedMonth = await fetchLatestReport();
-    if (!reportedMonth) return console.log('[❌] Could not find report month on page.');
+    if (!reportedMonth) return logMessage('❌ Could not find report month on page.');
 
     const now = new Date();
     now.setMonth(now.getMonth() - 1);
     const expectedMonth = now.toLocaleString('default', { month: 'long' });
 
     if (reportedMonth.toLowerCase() !== expectedMonth.toLowerCase()) {
-      console.log(`[⏳] Report not updated yet. Found "${reportedMonth}", expected "${expectedMonth}".`);
-      return;
+      return logMessage(`⏳ Report not updated yet. Found "${reportedMonth}", expected "${expectedMonth}".`);
     }
 
     const lastMonthSaved = getLastSavedReport();
     if (reportedMonth !== lastMonthSaved) {
-      console.log(`[✅] New month detected: ${reportedMonth}`);
+      logMessage(`✅ New month detected: ${reportedMonth}`);
       await notifyNewReport('https://www.va.gov/opal/docs/nac/csas/summaryVAhearingAidProcurement.xlsx');
       saveLatestReport(reportedMonth);
     } else {
-      console.log(`[🟰] Report already recorded for ${reportedMonth}`);
+      logMessage(`🟰 Report already recorded for ${reportedMonth}`);
     }
   } catch (err) {
-    console.error('[🔥] Error checking for update:', err);
+    logMessage(`🔥 Error checking for update: ${err}`);
   }
 }
 
-// Schedule daily 09:00 scrape
 cron.schedule('0 9 * * *', checkForUpdate);
 
-// Web server for uptime pings
-app.get('/', (_, res) => res.send('✅ VA Watcher is live!'));
+app.use(express.static('public'));
+app.get('/', (_, res) => {
+  const logs = fs.existsSync(LOG_FILE) ? JSON.parse(fs.readFileSync(LOG_FILE)) : [];
+  const html = `
+    <html>
+      <head><title>VA Watcher</title></head>
+      <body>
+        <h1>✅ VA Watcher is live!</h1>
+        <a href="/latest.xlsx">Download Latest Excel Report</a>
+        <h2>Logs</h2>
+        <ul>
+          ${logs.map(log => `<li>[${log.timestamp}] ${log.message}</li>`).join('')}
+        </ul>
+      </body>
+    </html>
+  `;
+  res.send(html);
+});
 app.get('/ping', (_, res) => res.send('pong'));
+app.get('/scrape', async (_, res) => {
+  await checkForUpdate();
+  res.send('Scrape complete!');
+});
 
 app.listen(PORT, () => {
-  console.log(`[🌐] Web server running on port ${PORT}`);
+  logMessage(`🌐 Web server running on port ${PORT}`);
   checkForUpdate();
 });
