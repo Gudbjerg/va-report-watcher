@@ -1,3 +1,4 @@
 node_modules/
 .env
-.DS_Store
+lastReport.json
+log.json

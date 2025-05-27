@@ -5,6 +5,7 @@ const cron = require('node-cron');
 const nodemailer = require('nodemailer');
 const express = require('express');
 const path = require('path');
+const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,6 +13,7 @@ const PORT = process.env.PORT || 3000;
 const URL = 'https://www.va.gov/opal/nac/csas/index.asp';
 const STORAGE_FILE = './lastReport.json';
 const LOG_FILE = './log.json';
+const DOWNLOAD_FILE = './report.xlsx';
 
 ['EMAIL_USER', 'EMAIL_PASS', 'EMAIL_TO'].forEach(key => {
   if (!process.env[key]) {
@@ -46,10 +48,22 @@ async function fetchLatestReport() {
   const result = await page.evaluate(() => {
     const para = Array.from(document.querySelectorAll('p'))
       .find(p => p.textContent.includes('Hearing Aid Procurement Summary') && p.textContent.includes('report'));
-    if (!para) return null;
+    let reportedMonth = null;
+    if (para) {
+      const match = para.textContent.match(/\((January|February|March|April|May|June|July|August|September|October|November|December)\)/i);
+      if (match) reportedMonth = match[1];
+    }
 
-    const match = para.textContent.match(/\((January|February|March|April|May|June|July|August|September|October|November|December)\)/i);
-    return match ? match[1] : null;
+    const link = Array.from(document.querySelectorAll('a'))
+      .find(a => a.href.includes('summaryVAhearingAidProcurement.xlsx'));
+    const xlsxURL = link ? link.href : null;
+
+    if (!reportedMonth && xlsxURL) {
+      const nameMatch = xlsxURL.match(/_(January|February|March|April|May|June|July|August|September|October|November|December)/i);
+      reportedMonth = nameMatch ? nameMatch[1] : null;
+    }
+
+    return { reportedMonth, xlsxURL };
   });
 
   await browser.close();
@@ -66,12 +80,26 @@ function saveLatestReport(month) {
   fs.writeFileSync(STORAGE_FILE, JSON.stringify({ month }, null, 2));
 }
 
-async function notifyNewReport(url) {
+function downloadFile(fileURL, dest) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(dest);
+    https.get(fileURL, response => {
+      if (response.statusCode !== 200) return reject('Failed to download');
+      response.pipe(file);
+      file.on('finish', () => {
+        file.close(resolve);
+      });
+    }).on('error', reject);
+  });
+}
+
+async function notifyNewReport(url, attachmentPath) {
   await transporter.sendMail({
     from: process.env.EMAIL_USER,
     to: process.env.EMAIL_TO,
     subject: 'New VA Hearing Aid Report Available',
-    text: `A new report is available: ${url}`
+    text: `A new report is available: ${url}`,
+    attachments: attachmentPath ? [{ path: attachmentPath }] : []
   });
   logMessage(`📧 Email sent for new report: ${url}`);
 }
@@ -79,7 +107,7 @@ async function notifyNewReport(url) {
 async function checkForUpdate() {
   try {
     logMessage('🔍 Checking for updated month...');
-    const reportedMonth = await fetchLatestReport();
+    const { reportedMonth, xlsxURL } = await fetchLatestReport();
     if (!reportedMonth) return logMessage('❌ Could not find report month on page.');
 
     const now = new Date();
@@ -93,7 +121,12 @@ async function checkForUpdate() {
     const lastMonthSaved = getLastSavedReport();
     if (reportedMonth !== lastMonthSaved) {
       logMessage(`✅ New month detected: ${reportedMonth}`);
-      await notifyNewReport('https://www.va.gov/opal/docs/nac/csas/summaryVAhearingAidProcurement.xlsx');
+      let attachmentPath = null;
+      if (xlsxURL) {
+        await downloadFile(xlsxURL, DOWNLOAD_FILE);
+        attachmentPath = DOWNLOAD_FILE;
+      }
+      await notifyNewReport(`New Hearing Aid Summary report detected for ${reportedMonth}. View it here: ${URL}`, attachmentPath);
       saveLatestReport(reportedMonth);
     } else {
       logMessage(`🟰 Report already recorded for ${reportedMonth}`);
