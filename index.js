@@ -3,9 +3,19 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const cron = require('node-cron');
 const nodemailer = require('nodemailer');
+const express = require('express');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
 
 const URL = 'https://www.va.gov/opal/nac/csas/index.asp';
 const STORAGE_FILE = './lastReport.json';
+
+['EMAIL_USER', 'EMAIL_PASS', 'EMAIL_TO'].forEach(key => {
+  if (!process.env[key]) {
+    throw new Error(`Missing ENV: ${key}`);
+  }
+});
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -16,7 +26,10 @@ const transporter = nodemailer.createTransport({
 });
 
 async function fetchLatestReport() {
-  const browser = await puppeteer.launch({ headless: 'new' });
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  });
   const page = await browser.newPage();
   await page.goto(URL, { waitUntil: 'networkidle2' });
 
@@ -81,8 +94,14 @@ async function checkForUpdate() {
   }
 }
 
+// Schedule daily 09:00 scrape
 cron.schedule('0 9 * * *', checkForUpdate);
 
-(async () => {
-  await checkForUpdate();
-})();
+// Web server for uptime pings
+app.get('/', (_, res) => res.send('✅ VA Watcher is live!'));
+app.get('/ping', (_, res) => res.send('pong'));
+
+app.listen(PORT, () => {
+  console.log(`[🌐] Web server running on port ${PORT}`);
+  checkForUpdate();
+});
