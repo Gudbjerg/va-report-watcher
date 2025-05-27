@@ -5,9 +5,12 @@ const cron = require('node-cron');
 const nodemailer = require('nodemailer');
 const express = require('express');
 const path = require('path');
+const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+app.use('/static', express.static(path.join(__dirname, 'public')));
 
 const URL = 'https://www.va.gov/opal/nac/csas/index.asp';
 const STORAGE_FILE = './lastReport.json';
@@ -85,6 +88,17 @@ async function notifyNewReport(newUrl) {
   logMessage(`Email sent for new report: ${newUrl}`);
 }
 
+async function downloadReportFile() {
+  const file = fs.createWriteStream(REPORT_FILE);
+  https.get('https://www.va.gov/opal/docs/nac/csas/summaryVAhearingAidProcurement.xlsx', (response) => {
+    response.pipe(file);
+    file.on('finish', () => {
+      file.close();
+      console.log('[⬇️] Report downloaded and saved to /public/latest.xlsx');
+    });
+  });
+}
+
 async function checkForUpdate() {
   try {
     logMessage('Checking for updated month...');
@@ -103,6 +117,7 @@ async function checkForUpdate() {
     if (reportedMonth !== lastMonthSaved) {
       logMessage(`✅ New month detected: ${reportedMonth}`);
       await notifyNewReport('https://www.va.gov/opal/docs/nac/csas/summaryVAhearingAidProcurement.xlsx');
+      await downloadReportFile();
       saveLatestReport(reportedMonth);
     } else {
       logMessage(`🟰 Report already recorded for ${reportedMonth}`);
@@ -122,7 +137,7 @@ app.get('/', (_, res) => {
       <head><title>VA Watcher</title></head>
       <body>
         <h1>✅ VA Watcher is live!</h1>
-        <a href="/latest.xlsx">Download Latest Excel Report</a>
+        <a href="/static/latest.xlsx" download>Download Latest Excel Report</a>
         <h2>Logs</h2>
         <ul>
           ${logs.map(log => `<li>[${log.timestamp}] ${log.message}</li>`).join('')}
@@ -132,6 +147,7 @@ app.get('/', (_, res) => {
   `;
   res.send(html);
 });
+
 app.get('/ping', (_, res) => res.send('pong'));
 app.get('/scrape', async (_, res) => {
   await checkForUpdate();
