@@ -7,6 +7,7 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.8",
     "cheerio": "^1.0.0-rc.12",
     "dotenv": "^16.4.1",
     "express": "^4.18.2",
