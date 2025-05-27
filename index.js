@@ -1,21 +1,18 @@
 require('dotenv').config();
-const puppeteer = require('puppeteer');
+const fetch = require('node-fetch');
+const cheerio = require('cheerio');
 const fs = require('fs');
+const https = require('https');
 const cron = require('node-cron');
 const nodemailer = require('nodemailer');
 const express = require('express');
-const path = require('path');
-const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use('/static', express.static(path.join(__dirname, 'public')));
-
-const URL = 'https://www.va.gov/opal/nac/csas/index.asp';
+const BASE_URL = 'https://www.va.gov/opal/nac/csas/index.asp';
 const STORAGE_FILE = './lastReport.json';
-const LOG_FILE = './log.json';
-const REPORT_FILE = './public/latest.xlsx';
+const FILE_DOWNLOAD = './latest.xlsx';
 
 ['EMAIL_USER', 'EMAIL_PASS', 'EMAIL_TO'].forEach(key => {
   if (!process.env[key]) {
@@ -31,121 +28,123 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-function logMessage(message) {
-  const timestamp = new Date().toISOString();
-  const entry = { timestamp, message };
-  const logs = fs.existsSync(LOG_FILE) ? JSON.parse(fs.readFileSync(LOG_FILE)) : [];
-  logs.unshift(entry);
-  fs.writeFileSync(LOG_FILE, JSON.stringify(logs.slice(0, 50), null, 2));
-}
+const retry = async (fn, attempts = 3) => {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i === attempts - 1) throw err;
+    }
+  }
+};
 
 async function fetchLatestReport() {
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  const res = await fetch(BASE_URL, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; VA-Watcher/1.0)'
+    }
   });
-  const page = await browser.newPage();
-  await page.goto(URL, { waitUntil: 'networkidle2', timeout: 60000 });
+  const html = await res.text();
+  const $ = cheerio.load(html);
 
-  const result = await page.evaluate(() => {
-    const para = Array.from(document.querySelectorAll('p'))
-      .find(p => p.textContent.includes('Hearing Aid Procurement Summary') && p.textContent.includes('report'));
-    if (!para) return null;
+  const paragraph = $('p').filter((_, p) =>
+    $(p).text().includes('Hearing Aid Procurement Summary') &&
+    $(p).text().includes('report')
+  ).first().text();
 
-    const match = para.textContent.match(/\((January|February|March|April|May|June|July|August|September|October|November|December)\)/i);
-    return match ? match[1] : null;
-  });
+  const link = $('a').filter((_, a) => $(a).attr('href')?.endsWith('.xlsx')).first().attr('href');
+  const match = paragraph.match(/\((January|February|March|April|May|June|July|August|September|October|November|December)\)/i);
 
-  const [link] = await page.$$eval('a[href$="summaryVAhearingAidProcurement.xlsx"]', links => links.map(a => a.href));
-
-  if (link) {
-    const viewSource = await page.goto(link);
-    fs.writeFileSync(REPORT_FILE, await viewSource.buffer());
-    logMessage('Downloaded new report and saved to public directory');
-  }
-
-  await browser.close();
-  return result;
+  return { month: match ? match[1] : null, href: link ? new URL(link, BASE_URL).href : null };
 }
 
 function getLastSavedReport() {
-  if (!fs.existsSync(STORAGE_FILE)) return null;
-  const data = fs.readFileSync(STORAGE_FILE);
-  return JSON.parse(data).month;
-}
+    if (!fs.existsSync(STORAGE_FILE)) return null;
+    const data = fs.readFileSync(STORAGE_FILE, 'utf8').trim();
+    if (!data) return null;
+    try {
+      return JSON.parse(data).month;
+    } catch (err) {
+      console.warn('[⚠️] Invalid JSON in storage file, ignoring:', err.message);
+      return null;
+    }
+  }
+  
 
 function saveLatestReport(month) {
   fs.writeFileSync(STORAGE_FILE, JSON.stringify({ month }, null, 2));
 }
 
-async function notifyNewReport(newUrl) {
+function downloadFile(url, dest) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(dest);
+    https.get(url, response => {
+      if (response.statusCode !== 200) {
+        return reject(new Error(`Failed to get '${url}' (${response.statusCode})`));
+      }
+      response.pipe(file);
+      file.on('finish', () => file.close(resolve));
+    }).on('error', reject);
+  });
+}
+
+async function notifyNewReport(url, filePath) {
   await transporter.sendMail({
     from: process.env.EMAIL_USER,
     to: process.env.EMAIL_TO,
     subject: 'New VA Hearing Aid Report Available',
-    text: `A new report is available:\n${newUrl}`
+    text: `A new report is available: ${url}`,
+    attachments: filePath ? [{ filename: 'summary.xlsx', path: filePath }] : []
   });
-  logMessage(`Email sent for new report: ${newUrl}`);
-}
-
-async function downloadReportFile() {
-  const file = fs.createWriteStream(REPORT_FILE);
-  https.get('https://www.va.gov/opal/docs/nac/csas/summaryVAhearingAidProcurement.xlsx', (response) => {
-    response.pipe(file);
-    file.on('finish', () => {
-      file.close();
-      console.log('[⬇️] Report downloaded and saved to /public/latest.xlsx');
-    });
-  });
+  console.log(`[\uD83D\uDCE7] Email sent for new report: ${url}`);
 }
 
 async function checkForUpdate() {
   try {
-    logMessage('Checking for updated month...');
-    const reportedMonth = await fetchLatestReport();
-    if (!reportedMonth) return logMessage('❌ Could not find report month on page.');
+    console.log('[\uD83D\uDD0D] Checking for updated month...');
+    const result = await fetchLatestReport();
+    const reportedMonth = result.month;
+    const fileUrl = result.href;
+    if (!reportedMonth) return console.log('[\u274C] Could not find report month on page.');
 
     const now = new Date();
     now.setMonth(now.getMonth() - 1);
     const expectedMonth = now.toLocaleString('default', { month: 'long' });
 
     if (reportedMonth.toLowerCase() !== expectedMonth.toLowerCase()) {
-      return logMessage(`⏳ Report not updated yet. Found "${reportedMonth}", expected "${expectedMonth}".`);
+      return console.log(`[\u23F3] Report not updated yet. Found "${reportedMonth}", expected "${expectedMonth}".`);
     }
 
     const lastMonthSaved = getLastSavedReport();
     if (reportedMonth !== lastMonthSaved) {
-      logMessage(`✅ New month detected: ${reportedMonth}`);
-      await notifyNewReport('https://www.va.gov/opal/docs/nac/csas/summaryVAhearingAidProcurement.xlsx');
-      await downloadReportFile();
+      console.log(`[✅] New month detected: ${reportedMonth}`);
+      let filePath = null;
+      if (fileUrl) {
+        try {
+          await retry(() => downloadFile(fileUrl, FILE_DOWNLOAD));
+          filePath = FILE_DOWNLOAD;
+        } catch (err) {
+          console.log(`⚠️ Failed to download file: ${err.message}`);
+        }
+      }
+      await retry(() => notifyNewReport(fileUrl || BASE_URL, filePath));
       saveLatestReport(reportedMonth);
     } else {
-      logMessage(`🟰 Report already recorded for ${reportedMonth}`);
+      console.log(`[🟰] Report already recorded for ${reportedMonth}`);
     }
   } catch (err) {
-    logMessage(`🔥 Error checking for update: ${err}`);
+    console.log(`[\uD83D\uDD25] Error checking for update: ${err}`);
   }
 }
 
+// Run at 9:00 AM UTC every day
 cron.schedule('0 9 * * *', checkForUpdate);
 
-app.use(express.static('public'));
+// Run at 9:00 PM UTC every day
+cron.schedule('0 21 * * *', checkForUpdate);
+
 app.get('/', (_, res) => {
-  const logs = fs.existsSync(LOG_FILE) ? JSON.parse(fs.readFileSync(LOG_FILE)) : [];
-  const html = `
-    <html>
-      <head><title>VA Watcher</title></head>
-      <body>
-        <h1>✅ VA Watcher is live!</h1>
-        <a href="/static/latest.xlsx" download>Download Latest Excel Report</a>
-        <h2>Logs</h2>
-        <ul>
-          ${logs.map(log => `<li>[${log.timestamp}] ${log.message}</li>`).join('')}
-        </ul>
-      </body>
-    </html>
-  `;
-  res.send(html);
+  res.send('<h1>✅ VA Watcher is live!</h1>');
 });
 
 app.get('/ping', (_, res) => res.send('pong'));
@@ -154,7 +153,21 @@ app.get('/scrape', async (_, res) => {
   res.send('Scrape complete!');
 });
 
+app.get('/test-email', async (_, res) => {
+  try {
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: process.env.EMAIL_TO,
+      subject: '[TEST] VA Watcher Email',
+      text: 'Test email from VA Watcher ✔️'
+    });
+    res.send('✅ Test email sent!');
+  } catch (err) {
+    res.send(`❌ Failed to send test email: ${err.message}`);
+  }
+});
+
 app.listen(PORT, () => {
-  logMessage(`🌐 Web server running on port ${PORT}`);
+  console.log(`🌐 Web server running on port ${PORT}`);
   checkForUpdate();
 });
