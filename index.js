@@ -137,11 +137,7 @@ async function checkForUpdate() {
   }
 }
 
-// Run at 9:00 AM UTC every day
-cron.schedule('0 9 * * *', checkForUpdate);
-
-// Run at 9:00 PM UTC every day
-cron.schedule('0 21 * * *', checkForUpdate);
+cron.schedule('0 12-18 * * *', checkForUpdate);
 
 app.get('/', (_, res) => {
   res.send('<h1>✅ VA Watcher is live!</h1>');
