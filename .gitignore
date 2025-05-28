@@ -1,4 +1,2 @@
 node_modules/
-.env
-lastReport.json
-log.json
+.env.env
