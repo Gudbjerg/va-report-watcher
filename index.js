@@ -8,8 +8,15 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Cron Jobs
-cron.schedule('0 12-18 * * *', checkVA); // VA scraper: once per hour 12:00-18:00
-cron.schedule('0 9,21 * * *', checkEsundhed); // eSundhed: 09:00 & 21:00 UTC
+cron.schedule('0 12-18 * * *', () => {
+  console.log(`[⏰] ${new Date().toISOString()} — Cron triggered: checkVA()`);
+  checkVA();
+});
+
+cron.schedule('0 9,21 * * *', () => {
+  console.log(`[⏰] ${new Date().toISOString()} — Cron triggered: checkEsundhed()`);
+  checkEsundhed();
+});
 
 // Endpoints
 app.get('/', (_, res) => res.send('<h1>✅ Universal Watcher is live!</h1>'));
