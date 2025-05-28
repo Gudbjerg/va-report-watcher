@@ -1,20 +1,24 @@
 {
-  "name": "va-report-watcher",
+  "name": "va-watcher",
   "version": "1.0.0",
-  "description": "",
+  "description": "Watches the VA.gov page for monthly Hearing Aid Procurement Summary reports",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.8",
+    "cheerio": "^1.0.0-rc.12",
+    "dotenv": "^16.4.1",
+    "express": "^4.18.2",
+    "node-cron": "^3.0.2",
+    "node-fetch": "^2.6.7",
+    "nodemailer": "^6.9.8"
+  },
+  "engines": {
+    "node": ">=14"
+  },
   "keywords": [],
   "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "dotenv": "^16.5.0",
-    "express": "^5.1.0",
-    "fs": "^0.0.1-security",
-    "node-cron": "^4.0.7",
-    "nodemailer": "^7.0.3",
-    "puppeteer": "^18.2.1"
-  }
+  "license": "ISC"
 }
