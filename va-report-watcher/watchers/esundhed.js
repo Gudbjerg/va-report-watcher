@@ -6,10 +6,10 @@ const nodemailer = require('nodemailer');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 
 const BASE_URL = 'https://www.esundhed.dk/Emner/Laegemidler/Laegemidlermodovervaegt';
-const FILE_DOWNLOAD = './esundhed-latest.xlsx';
 const FILE_TABLE = 'esundhed_report';
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
@@ -51,13 +51,13 @@ async function fetchLatestEsundhedReport() {
   return { fileName, fullUrl };
 }
 
-async function getLastEsundhedFilename() {
-  const { data, error } = await supabase.from(FILE_TABLE).select('filename').eq('id', 1).single();
-  return error ? null : data.filename;
+async function getLastEsundhedRecord() {
+  const { data, error } = await supabase.from(FILE_TABLE).select('filename, hash').eq('id', 1).single();
+  return error ? null : data;
 }
 
-async function saveEsundhedFilename(filename) {
-  await supabase.from(FILE_TABLE).upsert({ id: 1, filename });
+async function saveEsundhedRecord(filename, hash) {
+  await supabase.from(FILE_TABLE).upsert({ id: 1, filename, hash });
 }
 
 const getFileBuffer = url => {
@@ -71,8 +71,9 @@ const getFileBuffer = url => {
   });
 };
 
-async function notifyNewEsundhedReport(url) {
-  const buffer = await getFileBuffer(url);
+const getHash = buffer => crypto.createHash('sha256').update(buffer).digest('hex');
+
+async function notifyNewEsundhedReport(url, buffer) {
   await transporter.sendMail({
     from: process.env.ESUNDHED_FROM_EMAIL || process.env.EMAIL_USER,
     to: process.env.ESUNDHED_TO_EMAIL || process.env.EMAIL_TO,
@@ -86,7 +87,6 @@ async function notifyNewEsundhedReport(url) {
   console.log(`[📧] Email sent for new eSundhed report: ${url}`);
 }
 
-
 async function checkEsundhedUpdate() {
   try {
     console.log('[🔍] Checking eSundhed for updated report...');
@@ -94,12 +94,14 @@ async function checkEsundhedUpdate() {
     if (!result) return console.log('[❌] Could not locate download link.');
 
     const { fileName, fullUrl } = result;
-    const lastFileName = await getLastEsundhedFilename();
+    const buffer = await getFileBuffer(fullUrl);
+    const hash = getHash(buffer);
+    const lastRecord = await getLastEsundhedRecord();
 
-    if (fileName !== lastFileName) {
-      console.log(`[✅] New report detected: ${fileName}`);
-      await retry(() => notifyNewEsundhedReport(fullUrl));
-      await saveEsundhedFilename(fileName);
+    if (!lastRecord || hash !== lastRecord.hash) {
+      console.log(`[✅] New report detected or updated contents: ${fileName}`);
+      await retry(() => notifyNewEsundhedReport(fullUrl, buffer));
+      await saveEsundhedRecord(fileName, hash);
     } else {
       console.log(`[🟰] Report already recorded: ${fileName}`);
     }
@@ -107,6 +109,5 @@ async function checkEsundhedUpdate() {
     console.log(`[🔥] Error checking eSundhed update: ${err}`);
   }
 }
-
 
 module.exports = { checkEsundhedUpdate };

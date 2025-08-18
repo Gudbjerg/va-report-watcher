@@ -13,7 +13,7 @@ cron.schedule('0 12-18 * * *', () => {
   checkVA();
 });
 
-cron.schedule('0 9,21 * * *', () => {
+cron.schedule('0 12-18 * * *', () => {
   console.log(`[⏰] ${new Date().toISOString()} — Cron triggered: checkEsundhed()`);
   checkEsundhed();
 });
@@ -21,10 +21,12 @@ cron.schedule('0 9,21 * * *', () => {
 // Endpoints
 app.get('/', (_, res) => res.send('<h1>✅ Universal Watcher is live!</h1>'));
 app.get('/ping', (_, res) => res.send('pong'));
+
 app.get('/scrape/va', async (_, res) => {
   await checkVA();
   res.send('VA scrape complete!');
 });
+
 app.get('/scrape/esundhed', async (_, res) => {
   await checkEsundhed();
   res.send('eSundhed scrape complete!');
