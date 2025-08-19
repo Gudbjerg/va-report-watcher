@@ -52,12 +52,33 @@ async function fetchLatestEsundhedReport() {
 }
 
 async function getLastEsundhedRecord() {
-  const { data, error } = await supabase.from(FILE_TABLE).select('filename, hash').eq('id', 1).single();
-  return error ? null : data;
+  const { data, error } = await supabase
+    .from(FILE_TABLE)
+    .select('filename, hash')
+    .eq('id', 1)
+    .single();
+
+  if (error) {
+    console.error('[❌] Failed to fetch last record:', error);
+    return null;
+  }
+
+  return data;
 }
 
 async function saveEsundhedRecord(filename, hash) {
-  await supabase.from(FILE_TABLE).upsert({ id: 1, filename, hash });
+  console.log('[📥] Upserting to Supabase:', { filename, hash });
+  const { data, error } = await supabase
+    .from(FILE_TABLE)
+    .upsert({ id: 1, filename, hash });
+
+  if (error) {
+    console.error('[❌] Supabase upsert error:', error);
+    return false;
+  }
+
+  console.log('[✅] Supabase record saved:', data);
+  return true;
 }
 
 const getFileBuffer = url => {
@@ -84,6 +105,7 @@ async function notifyNewEsundhedReport(url, buffer) {
       content: buffer
     }]
   });
+
   console.log(`[📧] Email sent for new eSundhed report: ${url}`);
 }
 
@@ -96,12 +118,24 @@ async function checkEsundhedUpdate() {
     const { fileName, fullUrl } = result;
     const buffer = await getFileBuffer(fullUrl);
     const hash = getHash(buffer);
+
+    console.log(`[🧮] Computed hash: ${hash}`);
+
+    if (!hash || hash.length !== 64) {
+      console.error('[‼️] Invalid hash generated. Skipping save and notification.');
+      return;
+    }
+
     const lastRecord = await getLastEsundhedRecord();
 
     if (!lastRecord || hash !== lastRecord.hash) {
       console.log(`[✅] New report detected or updated contents: ${fileName}`);
       await retry(() => notifyNewEsundhedReport(fullUrl, buffer));
-      await saveEsundhedRecord(fileName, hash);
+
+      const saved = await saveEsundhedRecord(fileName, hash);
+      if (!saved) {
+        console.warn('[⚠️] Failed to save record after sending email!');
+      }
     } else {
       console.log(`[🟰] Report already recorded: ${fileName}`);
     }
