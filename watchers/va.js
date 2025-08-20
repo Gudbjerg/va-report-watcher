@@ -104,16 +104,20 @@ async function notifyNewReport(url) {
 async function runWatcher() {
   try {
     console.log('[🔍] VA: Checking for updated month...');
-    const { month, href } = await fetchLatestReport();
+    const { month, href } = await retry(() => fetchLatestReport());
 
-    if (!month) return console.log('[❌] VA: No month found.');
+    if (!month) {
+      console.log('[❌] VA: No month found.');
+      return { month: null };
+    }
 
     const now = new Date();
     now.setMonth(now.getMonth() - 1);
     const expectedMonth = now.toLocaleString('default', { month: 'long' });
 
     if (month.toLowerCase() !== expectedMonth.toLowerCase()) {
-      return console.log(`[⏳] VA: Found "${month}", expected "${expectedMonth}".`);
+      console.log(`[⏳] VA: Found "${month}", expected "${expectedMonth}".`);
+      return { month };
     }
 
     const last = await getLastSavedReport();
@@ -124,8 +128,11 @@ async function runWatcher() {
     } else {
       console.log(`[🟰] VA: Already recorded for ${month}`);
     }
+
+    return { month };
   } catch (err) {
     console.log(`[🔥] VA: Error: ${err.message}`);
+    return { month: null };
   }
 }
 

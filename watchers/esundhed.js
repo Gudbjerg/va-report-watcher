@@ -113,7 +113,10 @@ async function checkEsundhedUpdate() {
   try {
     console.log('[🔍] Checking eSundhed for updated report...');
     const result = await fetchLatestEsundhedReport();
-    if (!result) return console.log('[❌] Could not locate download link.');
+    if (!result) {
+      console.log('[❌] Could not locate download link.');
+      return { filename: null };
+    }
 
     const { fileName, fullUrl } = result;
     const buffer = await getFileBuffer(fullUrl);
@@ -123,7 +126,7 @@ async function checkEsundhedUpdate() {
 
     if (!hash || hash.length !== 64) {
       console.error('[‼️] Invalid hash generated. Skipping save and notification.');
-      return;
+      return { filename: null };
     }
 
     const lastRecord = await getLastEsundhedRecord();
@@ -139,8 +142,11 @@ async function checkEsundhedUpdate() {
     } else {
       console.log(`[🟰] Report already recorded: ${fileName}`);
     }
+
+    return { filename: fileName };
   } catch (err) {
     console.log(`[🔥] Error checking eSundhed update: ${err}`);
+    return { filename: null };
   }
 }
 
