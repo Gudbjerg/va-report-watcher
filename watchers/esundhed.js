@@ -70,7 +70,12 @@ async function saveEsundhedRecord(filename, hash) {
   console.log('[📥] Upserting to Supabase:', { filename, hash });
   const { data, error } = await supabase
     .from(FILE_TABLE)
-    .upsert({ id: 1, filename, hash });
+    .upsert({
+      id: 1,
+      filename,
+      hash,
+      updated_at: new Date().toISOString()
+    });
 
   if (error) {
     console.error('[❌] Supabase upsert error:', error);

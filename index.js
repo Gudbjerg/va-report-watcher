@@ -3,13 +3,16 @@ const express = require('express');
 const cron = require('node-cron');
 const { runWatcher: checkVA } = require('./watchers/va');
 const { checkEsundhedUpdate: checkEsundhed } = require('./watchers/esundhed');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
 // Status memory
 let lastVA = { time: null, month: null };
-let lastEsundhed = { time: null, filename: null };
+let lastEsundhed = { time: null, filename: null, updated_at: null };
 
 // Patch watchers to update status
 async function updateVA() {
@@ -23,8 +26,23 @@ async function updateVA() {
 async function updateEsundhed() {
   console.log(`[⏰] ${new Date().toISOString()} — Cron triggered: checkEsundhed()`);
   const result = await checkEsundhed();
+
   if (result?.filename) {
-    lastEsundhed = { time: new Date(), filename: result.filename };
+    const { data, error } = await supabase
+      .from('esundhed_report')
+      .select('updated_at')
+      .eq('id', 1)
+      .single();
+
+    const updatedAt = data?.updated_at
+      ? new Date(data.updated_at)
+      : null;
+
+    lastEsundhed = {
+      time: new Date(),
+      filename: result.filename,
+      updated_at: updatedAt
+    };
   }
 }
 
@@ -34,6 +52,11 @@ cron.schedule('0 4,8,12,16,20 * * *', updateEsundhed);
 
 // Endpoints
 app.get('/', (_, res) => {
+  const toDK = date =>
+    date
+      ? new Date(date.getTime() + 2 * 60 * 60 * 1000).toLocaleString('da-DK')
+      : '—';
+
   res.send(`
     <html lang="en">
       <head>
@@ -49,17 +72,18 @@ app.get('/', (_, res) => {
 
           <div class="mt-6">
             <h2 class="text-xl font-semibold mb-2">VA Report</h2>
-            <p><strong>Last Check:</strong> ${lastVA.time ? new Date(lastVA.time).toLocaleString('da-DK') : '—'}</p>
+            <p><strong>Last Check:</strong> ${toDK(lastVA.time)}</p>
             <p><strong>Latest Month:</strong> ${lastVA.month || '—'}</p>
           </div>
 
           <div class="mt-6">
             <h2 class="text-xl font-semibold mb-2">eSundhed Report</h2>
-            <p><strong>Last Check:</strong> ${lastEsundhed.time ? new Date(lastEsundhed.time).toLocaleString('da-DK') : '—'}</p>
+            <p><strong>Last Check:</strong> ${toDK(lastEsundhed.time)}</p>
             <p><strong>Latest File:</strong> ${lastEsundhed.filename || '—'}</p>
+            <p><strong>Last Modified:</strong> ${toDK(lastEsundhed.updated_at)}</p>
           </div>
 
-          <div class="mt-6 text-sm text-gray-500">Last refreshed at ${new Date().toLocaleString('da-DK')}</div>
+          <div class="mt-6 text-sm text-gray-500">Last refreshed at ${toDK(new Date())}</div>
         </div>
       </body>
     </html>
@@ -79,7 +103,7 @@ app.get('/scrape/esundhed', async (_, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\u{1F310} Server running on port ${PORT}`);
+  console.log(`🌐 Server running on port ${PORT}`);
   updateVA();
   updateEsundhed();
 });
