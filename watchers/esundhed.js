@@ -54,7 +54,7 @@ async function fetchLatestEsundhedReport() {
 async function getLastEsundhedRecord() {
   const { data, error } = await supabase
     .from(FILE_TABLE)
-    .select('filename, hash')
+    .select('filename, hash, updated_at')  // ✅ now includes timestamp
     .eq('id', 1)
     .single();
 

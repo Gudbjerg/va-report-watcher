@@ -80,7 +80,7 @@ app.get('/', (_, res) => {
             <h2 class="text-xl font-semibold mb-2">eSundhed Report</h2>
             <p><strong>Last Check:</strong> ${toDK(lastEsundhed.time)}</p>
             <p><strong>Latest File:</strong> ${lastEsundhed.filename || '—'}</p>
-            <p><strong>Last Modified:</strong> ${toDK(lastEsundhed.updated_at)}</p>
+            <p><strong>Last Reported:</strong> ${toDK(lastEsundhed.updated_at)}</p>
           </div>
 
           <div class="mt-6 text-sm text-gray-500">Last refreshed at ${toDK(new Date())}</div>
