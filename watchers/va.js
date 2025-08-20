@@ -1,4 +1,5 @@
 // watchers/va.js
+require('dotenv').config();
 const fetch = require('node-fetch');
 const cheerio = require('cheerio');
 const https = require('https');
@@ -29,30 +30,49 @@ const retry = async (fn, attempts = 3) => {
 };
 
 async function fetchLatestReport() {
-  const res = await fetch(BASE_URL, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VA-Watcher/1.0)' }
+  return retry(async () => {
+    const res = await fetch(BASE_URL, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/115.0.0.0 Safari/537.36'
+      }
+    });
+
+    if (!res.ok) {
+      throw new Error(`[❌] VA.gov fetch failed: ${res.status} ${res.statusText}`);
+    }
+
+    const html = await res.text();
+    const $ = cheerio.load(html);
+
+    const paragraph = $('p').filter((_, p) =>
+      $(p).text().includes('Hearing Aid Procurement Summary') &&
+      $(p).text().includes('report')
+    ).first().text();
+
+    const link = $('a').filter((_, a) => $(a).attr('href')?.endsWith('.xlsx')).first().attr('href');
+    const match = paragraph.match(/\((January|February|March|April|May|June|July|August|September|October|November|December)\)/i);
+
+    return {
+      month: match ? match[1] : null,
+      href: link ? new URL(link, BASE_URL).href : null
+    };
   });
-  const html = await res.text();
-  const $ = cheerio.load(html);
-
-  const paragraph = $('p').filter((_, p) =>
-    $(p).text().includes('Hearing Aid Procurement Summary') &&
-    $(p).text().includes('report')
-  ).first().text();
-
-  const link = $('a').filter((_, a) => $(a).attr('href')?.endsWith('.xlsx')).first().attr('href');
-  const match = paragraph.match(/\((January|February|March|April|May|June|July|August|September|October|November|December)\)/i);
-
-  return { month: match ? match[1] : null, href: link ? new URL(link, BASE_URL).href : null };
 }
 
 async function getLastSavedReport() {
   const { data, error } = await supabase.from(FILE_TABLE).select('month').eq('id', 1).single();
-  return error ? null : data.month;
+  return error ? null : data?.month;
 }
 
 async function saveLatestReport(month) {
-  await supabase.from(FILE_TABLE).upsert({ id: 1, month });
+  const payload = { id: 1, month };
+  console.log('[📥] Upserting to Supabase:', payload);
+  const { error } = await supabase.from(FILE_TABLE).upsert(payload);
+  if (error) {
+    console.log('[❌] Supabase upsert error:', error);
+  } else {
+    console.log('[✅] Supabase record saved');
+  }
 }
 
 const getFileBuffer = url => {
@@ -85,6 +105,7 @@ async function runWatcher() {
   try {
     console.log('[🔍] VA: Checking for updated month...');
     const { month, href } = await fetchLatestReport();
+
     if (!month) return console.log('[❌] VA: No month found.');
 
     const now = new Date();
