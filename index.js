@@ -64,10 +64,13 @@ cron.schedule('0 4,8,12,16,20 * * *', updateEsundhed);
 
 // Endpoints
 app.get('/', async (_, res) => {
-  const toDK = date =>
-    date
-      ? new Date(date.getTime() + 2 * 60 * 60 * 1000).toLocaleString('da-DK')
-      : '—';
+  function toDK(date) {
+    // Accept Date, ISO string, or timestamp. Return '—' when missing or invalid.
+    if (!date) return '—';
+    const parsed = (typeof date === 'string' || typeof date === 'number') ? new Date(date) : date;
+    if (!(parsed instanceof Date) || Number.isNaN(parsed.getTime())) return '—';
+    return new Date(parsed.getTime() + 2 * 60 * 60 * 1000).toLocaleString('da-DK');
+  }
 
   // If in-memory values are empty (for example after a restart), read latest persisted rows
   try {
