@@ -4,12 +4,11 @@ const fetch = require('node-fetch');
 const cheerio = require('cheerio');
 const nodemailer = require('nodemailer');
 const https = require('https');
-const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 
-const BASE_URL = 'https://www.esundhed.dk/Emner/Laegemidler/Laegemidlermodovervaegt';
+const BASE_URL = 'https://sundhedsdatabank.dk/medicin/medicintyper';
 const FILE_TABLE = 'esundhed_report';
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
@@ -37,16 +36,18 @@ async function fetchLatestEsundhedReport() {
   const html = await res.text();
   const $ = cheerio.load(html);
 
-  const linkTag = $('h3:contains("Månedsopgørelser")')
-    .closest('div')
-    .find('a[href$=".ashx"]')
-    .first();
+  const section = $('div.section-header h3 a')
+    .filter((_, el) => $(el).text().trim().includes('Vægttabs- og diabetesmedicin'))
+    .first()
+    .closest('div.section.expanded');
 
+  const linkTag = section.find('a[href$=".xlsx"]').first();
   const relativeHref = linkTag.attr('href');
+
   if (!relativeHref) return null;
 
   const fullUrl = new URL(relativeHref, BASE_URL).href;
-  const fileName = path.basename(relativeHref);
+  const fileName = decodeURIComponent(path.basename(relativeHref));
 
   return { fileName, fullUrl };
 }
@@ -54,7 +55,7 @@ async function fetchLatestEsundhedReport() {
 async function getLastEsundhedRecord() {
   const { data, error } = await supabase
     .from(FILE_TABLE)
-    .select('filename, hash, updated_at')  // ✅ now includes timestamp
+    .select('filename, hash, updated_at')
     .eq('id', 1)
     .single();
 
