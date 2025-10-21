@@ -11,7 +11,11 @@ const { createClient } = require('@supabase/supabase-js');
 const BASE_URL = 'https://sundhedsdatabank.dk/medicin/medicintyper';
 const FILE_TABLE = 'esundhed_report';
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+// Prefer service role key for backend operations
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
+);
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -74,15 +78,17 @@ async function getLastEsundhedRecord() {
 
 async function saveEsundhedRecord(filename, hash) {
   console.log('[📥] Upserting to Supabase:', { filename, hash });
-  const { data, error } = await supabase
+  const { data, error, status } = await supabase
     .from(FILE_TABLE)
     .upsert({
       id: 1,
       filename,
       hash,
       updated_at: new Date().toISOString()
-    });
+    })
+    .select();
 
+  console.log('[supabase] upsert result', { status, error, data });
   if (error) {
     console.error('[❌] Supabase upsert error:', error);
     return false;
@@ -106,18 +112,21 @@ const getFileBuffer = url => {
 const getHash = buffer => crypto.createHash('sha256').update(buffer).digest('hex');
 
 async function notifyNewEsundhedReport(url, buffer) {
-  await transporter.sendMail({
-    from: process.env.ESUNDHED_FROM_EMAIL || process.env.EMAIL_USER,
-    to: process.env.ESUNDHED_TO_EMAIL || process.env.EMAIL_TO,
-    subject: 'New eSundhed Report Available',
-    text: `A new report is available: ${url}`,
-    attachments: [{
-      filename: 'esundhed-latest.xlsx',
-      content: buffer
-    }]
-  });
-
-  console.log(`[📧] Email sent for new eSundhed report: ${url}`);
+  try {
+    await transporter.sendMail({
+      from: process.env.ESUNDHED_FROM_EMAIL || process.env.EMAIL_USER,
+      to: process.env.ESUNDHED_TO_EMAIL || process.env.EMAIL_TO,
+      subject: 'New eSundhed Report Available',
+      text: `A new report is available: ${url}`,
+      attachments: [{
+        filename: 'esundhed-latest.xlsx',
+        content: buffer
+      }]
+    });
+    console.log(`[📧] Email sent for new eSundhed report: ${url}`);
+  } catch (err) {
+    console.error('[email] notifyNewEsundhedReport failed (logged, not thrown):', err && err.message ? err.message : err);
+  }
 }
 
 async function checkEsundhedUpdate() {
@@ -152,10 +161,14 @@ async function checkEsundhedUpdate() {
 
     if (isNew) {
       console.log(`[✅] New report detected or updated contents: ${fileName}`);
-      await retry(() => notifyNewEsundhedReport(fullUrl, buffer));
 
+      // Persist to DB first, then notify. If save fails, log and skip notification.
       const saved = await saveEsundhedRecord(fileName, hash);
-      if (!saved) console.warn('[⚠️] Failed to save record after sending email!');
+      if (!saved) {
+        console.warn('[⚠️] Failed to save record to Supabase; skipping email notification.');
+      } else {
+        await retry(() => notifyNewEsundhedReport(fullUrl, buffer));
+      }
     } else {
       console.log(`[🟰] Report already recorded. Skipping. Same hash: ${lastRecord.hash}`);
     }

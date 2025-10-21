@@ -9,7 +9,11 @@ const nodemailer = require('nodemailer');
 const BASE_URL = 'https://www.va.gov/opal/nac/csas/index.asp';
 const FILE_TABLE = 'va_report';
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+// Prefer service role key for backend operations
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
+);
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -90,29 +94,37 @@ async function saveLatestReport(month, hash) {
   };
   console.log('[📥] Upserting to Supabase:', payload);
 
-  const { data, error } = await supabase
+  const { data, error, status } = await supabase
     .from(FILE_TABLE)
-    .upsert(payload);
+    .upsert(payload)
+    .select();
 
+  console.log('[supabase] va upsert', { status, error, data });
   if (error) {
     console.log('[❌] Supabase upsert error:', error);
-  } else {
-    console.log('[✅] Supabase record saved:', data);
+    return false;
   }
+
+  console.log('[✅] Supabase record saved:', data);
+  return true;
 }
 
 async function notifyNewReport(url, buffer) {
-  await transporter.sendMail({
-    from: process.env.EMAIL_USER,
-    to: process.env.EMAIL_TO,
-    subject: 'New VA Hearing Aid Report Available',
-    text: `A new report is available: ${url}`,
-    attachments: [{
-      filename: 'va-latest.xlsx',
-      content: buffer
-    }]
-  });
-  console.log(`[📧] VA email sent: ${url}`);
+  try {
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: process.env.EMAIL_TO,
+      subject: 'New VA Hearing Aid Report Available',
+      text: `A new report is available: ${url}`,
+      attachments: [{
+        filename: 'va-latest.xlsx',
+        content: buffer
+      }]
+    });
+    console.log(`[📧] VA email sent: ${url}`);
+  } catch (err) {
+    console.error('[email] notifyNewReport failed (logged, not thrown):', err && err.message ? err.message : err);
+  }
 }
 
 async function runWatcher() {
@@ -135,8 +147,12 @@ async function runWatcher() {
     const isNew = !last || last.hash !== hash;
     if (isNew) {
       console.log(`[✅] VA: New report or updated contents: ${month}`);
-      await retry(() => notifyNewReport(href, buffer));
-      await saveLatestReport(month, hash);
+      const saved = await saveLatestReport(month, hash);
+      if (saved) {
+        await retry(() => notifyNewReport(href, buffer));
+      } else {
+        console.warn('[⚠️] Failed to save VA report to Supabase; skipping email notification.');
+      }
     } else {
       console.log(`[🟰] VA: Already recorded for ${month}`);
     }

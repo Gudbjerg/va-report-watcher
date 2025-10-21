@@ -16,7 +16,11 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+// Prefer server-only service role key for backend writes (fallback to anon key)
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
+);
 
 // Status memory
 let lastVA = { time: null, month: null };
@@ -59,11 +63,36 @@ cron.schedule('0 4,8,12,16,20 * * *', updateVA); // 06, 10, 14, 18, 22 DK
 cron.schedule('0 4,8,12,16,20 * * *', updateEsundhed);
 
 // Endpoints
-app.get('/', (_, res) => {
+app.get('/', async (_, res) => {
   const toDK = date =>
     date
       ? new Date(date.getTime() + 2 * 60 * 60 * 1000).toLocaleString('da-DK')
       : '—';
+
+  // If in-memory values are empty (for example after a restart), read latest persisted rows
+  try {
+    if (!lastEsundhed.filename) {
+      const { data: latest, error } = await supabase
+        .from('esundhed_report')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!error && latest) lastEsundhed = { time: latest.created_at, filename: latest.filename, updated_at: latest.updated_at };
+    }
+
+    if (!lastVA.time) {
+      const { data: latestVa, error } = await supabase
+        .from('va_report')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!error && latestVa) lastVA = { time: latestVa.created_at, month: latestVa.month };
+    }
+  } catch (e) {
+    console.error('[ui] fallback DB read failed:', e && e.message ? e.message : e);
+  }
 
   res.send(`
     <html lang="en">
