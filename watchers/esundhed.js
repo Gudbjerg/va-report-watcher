@@ -113,17 +113,29 @@ const getHash = buffer => crypto.createHash('sha256').update(buffer).digest('hex
 
 async function notifyNewEsundhedReport(url, buffer) {
   try {
-    await transporter.sendMail({
-      from: process.env.ESUNDHED_FROM_EMAIL || process.env.EMAIL_USER,
-      to: process.env.ESUNDHED_TO_EMAIL || process.env.EMAIL_TO,
-      subject: 'New eSundhed Report Available',
-      text: `A new report is available: ${url}`,
-      attachments: [{
-        filename: 'esundhed-latest.xlsx',
-        content: buffer
-      }]
-    });
-    console.log(`[📧] Email sent for new eSundhed report: ${url}`);
+    if (process.env.SENDINBLUE_API_KEY) {
+      const { sendViaSendinblue } = require('../lib/sendViaSendinblue');
+      await sendViaSendinblue({
+        from: process.env.ESUNDHED_FROM_EMAIL || process.env.EMAIL_USER,
+        to: process.env.ESUNDHED_TO_EMAIL || process.env.EMAIL_TO,
+        subject: 'New eSundhed Report Available',
+        text: `A new report is available: ${url}`,
+        attachments: [{ filename: 'esundhed-latest.xlsx', content: buffer }]
+      });
+      console.log(`[📧] Email sent via Sendinblue for new eSundhed report: ${url}`);
+    } else {
+      await transporter.sendMail({
+        from: process.env.ESUNDHED_FROM_EMAIL || process.env.EMAIL_USER,
+        to: process.env.ESUNDHED_TO_EMAIL || process.env.EMAIL_TO,
+        subject: 'New eSundhed Report Available',
+        text: `A new report is available: ${url}`,
+        attachments: [{
+          filename: 'esundhed-latest.xlsx',
+          content: buffer
+        }]
+      });
+      console.log(`[📧] Email sent for new eSundhed report: ${url}`);
+    }
   } catch (err) {
     console.error('[email] notifyNewEsundhedReport failed (logged, not thrown):', err && err.message ? err.message : err);
   }

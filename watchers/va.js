@@ -111,17 +111,29 @@ async function saveLatestReport(month, hash) {
 
 async function notifyNewReport(url, buffer) {
   try {
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: process.env.EMAIL_TO,
-      subject: 'New VA Hearing Aid Report Available',
-      text: `A new report is available: ${url}`,
-      attachments: [{
-        filename: 'va-latest.xlsx',
-        content: buffer
-      }]
-    });
-    console.log(`[📧] VA email sent: ${url}`);
+    if (process.env.SENDINBLUE_API_KEY) {
+      const { sendViaSendinblue } = require('../lib/sendViaSendinblue');
+      await sendViaSendinblue({
+        from: process.env.EMAIL_USER,
+        to: process.env.EMAIL_TO,
+        subject: 'New VA Hearing Aid Report Available',
+        text: `A new report is available: ${url}`,
+        attachments: [{ filename: 'va-latest.xlsx', content: buffer }]
+      });
+      console.log(`[📧] VA email sent via Sendinblue: ${url}`);
+    } else {
+      await transporter.sendMail({
+        from: process.env.EMAIL_USER,
+        to: process.env.EMAIL_TO,
+        subject: 'New VA Hearing Aid Report Available',
+        text: `A new report is available: ${url}`,
+        attachments: [{
+          filename: 'va-latest.xlsx',
+          content: buffer
+        }]
+      });
+      console.log(`[📧] VA email sent: ${url}`);
+    }
   } catch (err) {
     console.error('[email] notifyNewReport failed (logged, not thrown):', err && err.message ? err.message : err);
   }

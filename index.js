@@ -166,6 +166,19 @@ app.post('/test-email', async (req, res) => {
   // Option 2: STARTTLS on 587
   const opts587 = { host: 'smtp.gmail.com', port: 587, secure: false, requireTLS: true, auth: { user, pass } };
 
+  // If Sendinblue key is present, use the HTTP API (works from Render free plan)
+  if (process.env.SENDINBLUE_API_KEY) {
+    try {
+      const { sendViaSendinblue } = require('./lib/sendViaSendinblue');
+      await sendViaSendinblue({ from: user, to, subject: 'va-report-watcher test email', text: 'This is a test email sent from va-report-watcher via Sendinblue' });
+      console.log('[email-test] sent (sendinblue)');
+      return res.send('Email sent (sendinblue)');
+    } catch (err) {
+      console.error('[email-test] sendinblue failed:', err && err.message ? err.message : String(err));
+      return res.status(500).send('sendinblue failed: ' + (err && err.message ? err.message : String(err)));
+    }
+  }
+
   try {
     const info = await trySend(opts465);
     console.log('[email-test] sent (465)', info && info.messageId ? info.messageId : info);
