@@ -1,4 +1,6 @@
 node_modules/
 .env.env
 
-watchers/test-esundhed.js
+watchers/
+test-esundhed.js
+test-supabase.js
