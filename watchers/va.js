@@ -1,8 +1,8 @@
-// watchers/va.js
 require('dotenv').config();
 const fetch = require('node-fetch');
 const cheerio = require('cheerio');
 const https = require('https');
+const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const nodemailer = require('nodemailer');
 
@@ -32,14 +32,10 @@ const retry = async (fn, attempts = 3) => {
 async function fetchLatestReport() {
   return retry(async () => {
     const res = await fetch(BASE_URL, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/115.0.0.0 Safari/537.36'
-      }
+      headers: { 'User-Agent': 'Mozilla/5.0' }
     });
 
-    if (!res.ok) {
-      throw new Error(`[❌] VA.gov fetch failed: ${res.status} ${res.statusText}`);
-    }
+    if (!res.ok) throw new Error(`VA fetch failed: ${res.status}`);
 
     const html = await res.text();
     const $ = cheerio.load(html);
@@ -49,7 +45,7 @@ async function fetchLatestReport() {
       $(p).text().includes('report')
     ).first().text();
 
-    const link = $('a').filter((_, a) => $(a).attr('href')?.endsWith('.xlsx')).first().attr('href');
+    const link = $('a[href$=".xlsx"]').first().attr('href');
     const match = paragraph.match(/\((January|February|March|April|May|June|July|August|September|October|November|December)\)/i);
 
     return {
@@ -59,13 +55,29 @@ async function fetchLatestReport() {
   });
 }
 
+const getFileBuffer = url => new Promise((resolve, reject) => {
+  https.get(url, res => {
+    if (res.statusCode !== 200) return reject(new Error(`Fetch failed: ${res.statusCode}`));
+    const chunks = [];
+    res.on('data', chunk => chunks.push(chunk));
+    res.on('end', () => resolve(Buffer.concat(chunks)));
+  }).on('error', reject);
+});
+
+const getHash = buffer => crypto.createHash('sha256').update(buffer).digest('hex');
+
 async function getLastSavedReport() {
-  const { data, error } = await supabase.from(FILE_TABLE).select('month').eq('id', 1).single();
-  return error ? null : data?.month;
+  const { data, error } = await supabase.from(FILE_TABLE).select('month, hash, updated_at').eq('id', 1).single();
+  return error ? null : data;
 }
 
-async function saveLatestReport(month) {
-  const payload = { id: 1, month };
+async function saveLatestReport(month, hash) {
+  const payload = {
+    id: 1,
+    month,
+    hash,
+    updated_at: new Date().toISOString()
+  };
   console.log('[📥] Upserting to Supabase:', payload);
   const { error } = await supabase.from(FILE_TABLE).upsert(payload);
   if (error) {
@@ -75,19 +87,7 @@ async function saveLatestReport(month) {
   }
 }
 
-const getFileBuffer = url => {
-  return new Promise((resolve, reject) => {
-    https.get(url, res => {
-      if (res.statusCode !== 200) return reject(new Error(`Failed to fetch: ${res.statusCode}`));
-      const chunks = [];
-      res.on('data', chunk => chunks.push(chunk));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-    }).on('error', reject);
-  });
-};
-
-async function notifyNewReport(url) {
-  const buffer = await getFileBuffer(url);
+async function notifyNewReport(url, buffer) {
   await transporter.sendMail({
     from: process.env.EMAIL_USER,
     to: process.env.EMAIL_TO,
@@ -105,26 +105,18 @@ async function runWatcher() {
   try {
     console.log('[🔍] VA: Checking for updated month...');
     const { month, href } = await retry(() => fetchLatestReport());
+    if (!month || !href) return { month: null };
 
-    if (!month) {
-      console.log('[❌] VA: No month found.');
-      return { month: null };
-    }
-
-    const now = new Date();
-    now.setMonth(now.getMonth() - 1);
-    const expectedMonth = now.toLocaleString('default', { month: 'long' });
-
-    if (month.toLowerCase() !== expectedMonth.toLowerCase()) {
-      console.log(`[⏳] VA: Found "${month}", expected "${expectedMonth}".`);
-      return { month };
-    }
+    const buffer = await getFileBuffer(href);
+    const hash = getHash(buffer);
+    console.log(`[🧮] VA Hash: ${hash}`);
 
     const last = await getLastSavedReport();
-    if (month !== last) {
-      console.log(`[✅] VA: New month detected: ${month}`);
-      await retry(() => notifyNewReport(href || BASE_URL));
-      await saveLatestReport(month);
+
+    if (!last || last.hash !== hash) {
+      console.log(`[✅] VA: New report or updated contents: ${month}`);
+      await retry(() => notifyNewReport(href, buffer));
+      await saveLatestReport(month, hash);
     } else {
       console.log(`[🟰] VA: Already recorded for ${month}`);
     }
