@@ -115,18 +115,23 @@ async function notifyNewEsundhedReport(url, buffer) {
   try {
     if (process.env.SENDINBLUE_API_KEY) {
       const { sendViaSendinblue } = require('../lib/sendViaSendinblue');
+      // Support comma-separated recipient lists in env var
+      const toEnv = process.env.ESUNDHED_TO_EMAIL || process.env.EMAIL_TO;
+      const to = toEnv && toEnv.includes(',') ? toEnv.split(',').map(s => s.trim()) : toEnv;
       await sendViaSendinblue({
         from: process.env.ESUNDHED_FROM_EMAIL || process.env.EMAIL_USER,
-        to: process.env.ESUNDHED_TO_EMAIL || process.env.EMAIL_TO,
+        to,
         subject: 'New eSundhed Report Available',
         text: `A new report is available: ${url}`,
         attachments: [{ filename: 'esundhed-latest.xlsx', content: buffer }]
       });
       console.log(`[📧] Email sent via Sendinblue for new eSundhed report: ${url}`);
     } else {
+      const toEnv = process.env.ESUNDHED_TO_EMAIL || process.env.EMAIL_TO;
+      const to = toEnv && toEnv.includes(',') ? toEnv.split(',').map(s => s.trim()) : toEnv;
       await transporter.sendMail({
         from: process.env.ESUNDHED_FROM_EMAIL || process.env.EMAIL_USER,
-        to: process.env.ESUNDHED_TO_EMAIL || process.env.EMAIL_TO,
+        to,
         subject: 'New eSundhed Report Available',
         text: `A new report is available: ${url}`,
         attachments: [{
