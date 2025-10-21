@@ -142,6 +142,41 @@ app.get('/scrape/esundhed', async (_, res) => {
   res.send('eSundhed scrape complete!');
 });
 
+// Temporary endpoint to test email sending. Call with POST /test-email?to=you@domain.tld
+app.post('/test-email', async (req, res) => {
+  const nodemailer = require('nodemailer');
+  const user = process.env.EMAIL_USER;
+  const pass = process.env.EMAIL_PASS;
+  const to = req.query.to || process.env.EMAIL_TO || user;
+
+  if (!user || !pass) {
+    console.error('[email-test] Missing EMAIL_USER or EMAIL_PASS');
+    return res.status(400).send('Missing EMAIL_USER or EMAIL_PASS environment vars');
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    auth: { user, pass }
+  });
+
+  try {
+    await transporter.verify();
+    const info = await transporter.sendMail({
+      from: user,
+      to,
+      subject: 'va-report-watcher test email',
+      text: 'This is a test email sent from va-report-watcher'
+    });
+    console.log('[email-test] sent', info && info.messageId ? info.messageId : info);
+    return res.send('Email sent');
+  } catch (err) {
+    console.error('[email-test] send failed:', err && err.message ? err.message : err);
+    return res.status(500).send('send failed: ' + (err && err.message ? err.message : String(err)));
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`🌐 Server running on port ${PORT}`);
   updateVA();
