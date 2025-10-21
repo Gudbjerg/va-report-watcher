@@ -1,4 +1,12 @@
 require('dotenv').config();
+// Debug Supabase connectivity when DEBUG_SUPABASE=1 is set (safe for debug deploys)
+if (process.env.DEBUG_SUPABASE === '1') {
+  try {
+    require('./debug/supabase-check');
+  } catch (e) {
+    console.warn('[debug] supabase-check not found:', e.message);
+  }
+}
 const express = require('express');
 const cron = require('node-cron');
 const { runWatcher: checkVA } = require('./watchers/va');
