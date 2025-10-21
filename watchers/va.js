@@ -67,7 +67,7 @@ const getFileBuffer = url => new Promise((resolve, reject) => {
 const getHash = buffer => crypto.createHash('sha256').update(buffer).digest('hex');
 
 async function getLastSavedReport() {
-  const { data, error } = await supabase.from(FILE_TABLE).select('month, hash, updated_at').eq('id', 1).single();
+  const { data, error } = await supabase.from(FILE_TABLE).select('month, hash, updated_at').eq('id', 1).maybeSingle();
   return error ? null : data;
 }
 

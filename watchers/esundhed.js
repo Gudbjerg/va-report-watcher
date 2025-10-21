@@ -62,7 +62,7 @@ async function getLastEsundhedRecord() {
     .from(FILE_TABLE)
     .select('filename, hash, updated_at')
     .eq('id', 1)
-    .single();
+    .maybeSingle();
 
   if (error) {
     console.error('[❌] Failed to fetch last record:', error);
