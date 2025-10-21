@@ -113,18 +113,22 @@ async function notifyNewReport(url, buffer) {
   try {
     if (process.env.SENDINBLUE_API_KEY) {
       const { sendViaSendinblue } = require('../lib/sendViaSendinblue');
+      const toEnv = process.env.EMAIL_TO;
+      const to = toEnv && toEnv.includes(',') ? toEnv.split(',').map(s => s.trim()) : toEnv;
       await sendViaSendinblue({
         from: process.env.EMAIL_USER,
-        to: process.env.EMAIL_TO,
+        to,
         subject: 'New VA Hearing Aid Report Available',
         text: `A new report is available: ${url}`,
         attachments: [{ filename: 'va-latest.xlsx', content: buffer }]
       });
       console.log(`[📧] VA email sent via Sendinblue: ${url}`);
     } else {
+      const toEnv = process.env.EMAIL_TO;
+      const to = toEnv && toEnv.includes(',') ? toEnv.split(',').map(s => s.trim()) : toEnv;
       await transporter.sendMail({
         from: process.env.EMAIL_USER,
-        to: process.env.EMAIL_TO,
+        to,
         subject: 'New VA Hearing Aid Report Available',
         text: `A new report is available: ${url}`,
         attachments: [{
