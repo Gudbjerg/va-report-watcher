@@ -36,18 +36,23 @@ async function fetchLatestEsundhedReport() {
   const html = await res.text();
   const $ = cheerio.load(html);
 
-  const section = $('div.section-header h3 a')
+  console.log('[🧾] Loaded new sundhedsdatabank page');
+
+  const linkTag = $('a.icon[href$=".XLSX"]')
     .filter((_, el) => $(el).text().trim().includes('Vægttabs- og diabetesmedicin'))
-    .first()
-    .closest('div.section.expanded');
+    .first();
 
-  const linkTag = section.find('a[href$=".xlsx"]').first();
   const relativeHref = linkTag.attr('href');
-
-  if (!relativeHref) return null;
+  if (!relativeHref) {
+    console.log('[❌] No XLSX link found with expected content');
+    return null;
+  }
 
   const fullUrl = new URL(relativeHref, BASE_URL).href;
   const fileName = decodeURIComponent(path.basename(relativeHref));
+
+  console.log(`[📁] Found file: ${fileName}`);
+  console.log(`[🔗] Full URL: ${fullUrl}`);
 
   return { fileName, fullUrl };
 }
@@ -156,4 +161,7 @@ async function checkEsundhedUpdate() {
   }
 }
 
-module.exports = { checkEsundhedUpdate };
+module.exports = {
+  checkEsundhedUpdate,
+  fetchLatestEsundhedReport
+};
