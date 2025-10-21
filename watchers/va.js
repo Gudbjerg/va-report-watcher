@@ -67,8 +67,18 @@ const getFileBuffer = url => new Promise((resolve, reject) => {
 const getHash = buffer => crypto.createHash('sha256').update(buffer).digest('hex');
 
 async function getLastSavedReport() {
-  const { data, error } = await supabase.from(FILE_TABLE).select('month, hash, updated_at').eq('id', 1).maybeSingle();
-  return error ? null : data;
+  const { data, error } = await supabase
+    .from(FILE_TABLE)
+    .select('month, hash, updated_at')
+    .eq('id', 1)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[❌] Supabase fetch error:', error);
+    return null;
+  }
+
+  return data;
 }
 
 async function saveLatestReport(month, hash) {
@@ -79,11 +89,15 @@ async function saveLatestReport(month, hash) {
     updated_at: new Date().toISOString()
   };
   console.log('[📥] Upserting to Supabase:', payload);
-  const { error } = await supabase.from(FILE_TABLE).upsert(payload);
+
+  const { data, error } = await supabase
+    .from(FILE_TABLE)
+    .upsert(payload);
+
   if (error) {
     console.log('[❌] Supabase upsert error:', error);
   } else {
-    console.log('[✅] Supabase record saved');
+    console.log('[✅] Supabase record saved:', data);
   }
 }
 
@@ -111,9 +125,15 @@ async function runWatcher() {
     const hash = getHash(buffer);
     console.log(`[🧮] VA Hash: ${hash}`);
 
+    if (!hash || hash.length !== 64) {
+      console.error('[‼️] Invalid hash generated. Skipping save and notification.');
+      return { month: null };
+    }
+
     const last = await getLastSavedReport();
 
-    if (!last || last.hash !== hash) {
+    const isNew = !last || last.hash !== hash;
+    if (isNew) {
       console.log(`[✅] VA: New report or updated contents: ${month}`);
       await retry(() => notifyNewReport(href, buffer));
       await saveLatestReport(month, hash);

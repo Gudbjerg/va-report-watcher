@@ -141,20 +141,31 @@ async function checkEsundhedUpdate() {
     }
 
     const lastRecord = await getLastEsundhedRecord();
+    const isNew = !lastRecord || hash !== lastRecord.hash;
 
-    if (!lastRecord || hash !== lastRecord.hash) {
+    console.log('[🧪 Final Check]', {
+      fileName,
+      hash,
+      lastHash: lastRecord?.hash,
+      isNew
+    });
+
+    if (isNew) {
       console.log(`[✅] New report detected or updated contents: ${fileName}`);
       await retry(() => notifyNewEsundhedReport(fullUrl, buffer));
 
       const saved = await saveEsundhedRecord(fileName, hash);
-      if (!saved) {
-        console.warn('[⚠️] Failed to save record after sending email!');
-      }
+      if (!saved) console.warn('[⚠️] Failed to save record after sending email!');
     } else {
-      console.log(`[🟰] Report already recorded: ${fileName}`);
+      console.log(`[🟰] Report already recorded. Skipping. Same hash: ${lastRecord.hash}`);
     }
 
-    return { filename: fileName };
+    return {
+      filename: fileName,
+      hash,
+      updated: isNew,
+      timestamp: new Date().toISOString()
+    };
   } catch (err) {
     console.log(`[🔥] Error checking eSundhed update: ${err}`);
     return { filename: null };
