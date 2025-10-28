@@ -9,8 +9,24 @@ if (process.env.DEBUG_SUPABASE === '1') {
 }
 const express = require('express');
 const cron = require('node-cron');
-const { runWatcher: checkVA } = require('./watchers/va');
-const { checkEsundhedUpdate: checkEsundhed } = require('./watchers/esundhed');
+// Load watchers from new projects/*/watchers location with a safe fallback
+const { runWatcher: checkVA } = (() => {
+  try {
+    return require('./projects/analyst-scraper/watchers/va');
+  } catch (e) {
+    console.warn('[loader] falling back to ./watchers/va', e && e.message ? e.message : '');
+    return require('./watchers/va');
+  }
+})();
+
+const { checkEsundhedUpdate: checkEsundhed } = (() => {
+  try {
+    return require('./projects/analyst-scraper/watchers/esundhed');
+  } catch (e) {
+    console.warn('[loader] falling back to ./watchers/esundhed', e && e.message ? e.message : '');
+    return require('./watchers/esundhed');
+  }
+})();
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
