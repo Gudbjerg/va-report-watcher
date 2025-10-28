@@ -9,6 +9,8 @@ if (process.env.DEBUG_SUPABASE === '1') {
 }
 const express = require('express');
 const cron = require('node-cron');
+const fs = require('fs');
+const path = require('path');
 // Load watchers from new projects/*/watchers location with a safe fallback
 const { runWatcher: checkVA } = (() => {
   try {
@@ -38,14 +40,68 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
 );
 
-// Status memory
+// Status memory (kept for compatibility with dashboard)
 let lastVA = { time: null, month: null, updated_at: null };
 let lastEsundhed = { time: null, filename: null, updated_at: null };
 
-// Patch watchers to update status
+// Discovered runtime functions (set by discoverWatchers)
+let checkVAFn = null;
+let checkEsundhedFn = null;
+
+function discoverWatchers() {
+  // Try project-first locations
+  try {
+    const vaPath = path.join(__dirname, 'projects', 'analyst-scraper', 'watchers', 'va.js');
+    if (fs.existsSync(vaPath)) {
+      const mod = require(vaPath);
+      checkVAFn = mod.runWatcher || mod;
+      console.log('[loader] loaded VA watcher from', vaPath);
+    }
+  } catch (e) {
+    console.warn('[loader] could not load project VA watcher:', e && e.message ? e.message : e);
+  }
+
+  try {
+    const esPath = path.join(__dirname, 'projects', 'analyst-scraper', 'watchers', 'esundhed.js');
+    if (fs.existsSync(esPath)) {
+      const mod = require(esPath);
+      checkEsundhedFn = mod.checkEsundhedUpdate || mod;
+      console.log('[loader] loaded eSundhed watcher from', esPath);
+    }
+  } catch (e) {
+    console.warn('[loader] could not load project eSundhed watcher:', e && e.message ? e.message : e);
+  }
+
+  // Fallback to legacy shims if project files missing
+  if (!checkVAFn) {
+    try {
+      const legacy = require('./watchers/va');
+      checkVAFn = legacy.runWatcher || legacy;
+      console.log('[loader] falling back to ./watchers/va');
+    } catch (e) {
+      console.warn('[loader] no VA watcher available:', e && e.message ? e.message : e);
+    }
+  }
+
+  if (!checkEsundhedFn) {
+    try {
+      const legacy = require('./watchers/esundhed');
+      checkEsundhedFn = legacy.checkEsundhedUpdate || legacy;
+      console.log('[loader] falling back to ./watchers/esundhed');
+    } catch (e) {
+      console.warn('[loader] no eSundhed watcher available:', e && e.message ? e.message : e);
+    }
+  }
+}
+
+// Patch watchers to update status (wrappers remain to keep routes/ui unchanged)
 async function updateVA() {
   console.log(`[⏰] ${new Date().toISOString()} — Cron triggered: checkVA()`);
-  const result = await checkVA();
+  if (!checkVAFn) {
+    console.warn('[updateVA] no VA watcher function available');
+    return;
+  }
+  const result = await checkVAFn();
   if (result?.month) {
     // Read persisted updated_at from Supabase (same pattern as eSundhed)
     try {
@@ -68,7 +124,11 @@ async function updateVA() {
 
 async function updateEsundhed() {
   console.log(`[⏰] ${new Date().toISOString()} — Cron triggered: checkEsundhed()`);
-  const result = await checkEsundhed();
+  if (!checkEsundhedFn) {
+    console.warn('[updateEsundhed] no eSundhed watcher function available');
+    return;
+  }
+  const result = await checkEsundhedFn();
 
   if (result?.filename) {
     const { data, error } = await supabase
