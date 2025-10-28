@@ -94,6 +94,9 @@ function discoverWatchers() {
   }
 }
 
+// Run discovery at startup so scheduled jobs have their handlers available
+discoverWatchers();
+
 // Patch watchers to update status (wrappers remain to keep routes/ui unchanged)
 async function updateVA() {
   console.log(`[⏰] ${new Date().toISOString()} — Cron triggered: checkVA()`);
