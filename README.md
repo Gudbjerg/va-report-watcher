@@ -37,25 +37,50 @@ cd va-report-watcher
 npm install
 ```
 
-### 3. Set Environment Variables
+## 3. Set Environment Variables
 
-Create a `.env` file:
+Create a `.env` file. Recommended env vars (use Render dashboard for production):
 
 ```env
 # Shared
-EMAIL_PASS=your-app-password
+EMAIL_USER=smtp.user@gmail.com   # SMTP username (used to auth with nodemailer)
+EMAIL_PASS=your-app-password     # SMTP app password
+FROM_EMAIL=alerts@yourdomain.com # Envelope From address (defaults to EMAIL_USER if not set)
+TO_EMAIL=recipient@example.com   # Comma-separated recipient list for general alerts
 PORT=3000
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your-service-role-key
 
-# VA Watcher
-EMAIL_USER=va.sender@gmail.com
-EMAIL_TO=recipient@example.com
-
-# eSundhed Watcher (optional override)
-ESUNDHED_FROM_EMAIL=other.sender@gmail.com
+# Site-specific overrides (optional)
+ESUNDHED_FROM_EMAIL=other.sender@gmail.com  # optional override From for eSundhed alerts
 ESUNDHED_TO_EMAIL=other.recipient@example.com
 ```
+
+### Per-watcher recipient lists
+
+This project supports per-watcher recipient lists so individual scrapers can notify different groups.
+
+- ESUNDHED_TO_EMAIL — comma-separated recipients for the eSundhed watcher
+- VA_TO_EMAIL — comma-separated recipients for the VA watcher
+- ESUNDHED_FROM_EMAIL / VA_FROM_EMAIL — optional From address overrides for each watcher
+- TO_EMAIL — global fallback recipient list used when a watcher-specific list is not set
+
+Behavior notes:
+
+- Values are parsed as comma-separated lists and trimmed — e.g. "a@example.com, b@example.com".
+- If a watcher-specific TO is unset, it falls back to `TO_EMAIL`, and then to `EMAIL_USER` (useful for local tests).
+- `FROM_EMAIL` is optional; if unset the code uses `EMAIL_USER` as the envelope From.
+- `DISABLE_EMAIL` must be set to the literal string `true` (lowercase) to disable sending. The app checks `process.env.DISABLE_EMAIL === 'true'`.
+
+Example per-watcher envs (Render dashboard):
+
+ESUNDHED_TO_EMAIL="alice@example.com,bob@example.com"
+VA_TO_EMAIL="charlie@example.com"
+FROM_EMAIL="reports@yourdomain.com"
+
+Keep `EMAIL_USER`/`EMAIL_PASS` for SMTP auth even if `FROM_EMAIL` matches — `EMAIL_USER` is used to authenticate with your SMTP provider.
+
+When you migrate providers or are testing on production, keep `DISABLE_EMAIL=true` until you've verified the new provider and recipient lists.
 
 > 💡 Gmail App Passwords are required for nodemailer
 > 🔐 Use Supabase **service role** key for database writes
@@ -95,8 +120,9 @@ npm start
 
 ### ✅ Render (Free Tier)
 
-* Add env vars in Render dashboard
+* Add env vars in Render dashboard (do NOT store API keys or secrets in the repo)
 * Start command: `npm start`
+* Set `DISABLE_EMAIL=true` while migrating providers or appealing Brevo suspension
 * UptimeRobot pings `/ping` every 5 min
 
 ---

@@ -2,7 +2,6 @@
 require('dotenv').config();
 const fetch = require('node-fetch');
 const cheerio = require('cheerio');
-const nodemailer = require('nodemailer');
 const https = require('https');
 const path = require('path');
 const crypto = require('crypto');
@@ -17,13 +16,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
 );
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.ESUNDHED_FROM_EMAIL || process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
+const { sendMail } = require('../lib/sendEmail');
 
 const retry = async (fn, attempts = 3) => {
   for (let i = 0; i < attempts; i++) {
@@ -113,34 +106,21 @@ const getHash = buffer => crypto.createHash('sha256').update(buffer).digest('hex
 
 async function notifyNewEsundhedReport(url, buffer) {
   try {
-    if (process.env.SENDINBLUE_API_KEY) {
-      const { sendViaSendinblue } = require('../lib/sendViaSendinblue');
-      // Support comma-separated recipient lists in env var
-      const toEnv = process.env.ESUNDHED_TO_EMAIL || process.env.EMAIL_TO;
-      const to = toEnv && toEnv.includes(',') ? toEnv.split(',').map(s => s.trim()) : toEnv;
-      await sendViaSendinblue({
-        from: process.env.ESUNDHED_FROM_EMAIL || process.env.EMAIL_USER,
-        to,
-        subject: 'New eSundhed Report Available',
-        text: `A new report is available: ${url}`,
-        attachments: [{ filename: 'esundhed-latest.xlsx', content: buffer }]
-      });
-      console.log(`[📧] Email sent via Sendinblue for new eSundhed report: ${url}`);
-    } else {
-      const toEnv = process.env.ESUNDHED_TO_EMAIL || process.env.EMAIL_TO;
-      const to = toEnv && toEnv.includes(',') ? toEnv.split(',').map(s => s.trim()) : toEnv;
-      await transporter.sendMail({
-        from: process.env.ESUNDHED_FROM_EMAIL || process.env.EMAIL_USER,
-        to,
-        subject: 'New eSundhed Report Available',
-        text: `A new report is available: ${url}`,
-        attachments: [{
-          filename: 'esundhed-latest.xlsx',
-          content: buffer
-        }]
-      });
-      console.log(`[📧] Email sent for new eSundhed report: ${url}`);
+    // Respect global disable flag to prevent accidental sends
+    if (process.env.DISABLE_EMAIL === 'true') {
+      console.log('[email] DISABLE_EMAIL=true — skipping eSundhed email', { url });
+      return;
     }
+
+    // Use sendEmail adapter. ESUNDHED_TO_EMAIL overrides TO_EMAIL -> EMAIL_USER.
+    await sendMail({
+      to: process.env.ESUNDHED_TO_EMAIL || process.env.TO_EMAIL || process.env.EMAIL_USER,
+      from: process.env.ESUNDHED_FROM_EMAIL || process.env.FROM_EMAIL || process.env.EMAIL_USER,
+      subject: 'New eSundhed Report Available',
+      text: `A new report is available: ${url}`,
+      attachments: [{ filename: 'esundhed-latest.xlsx', content: buffer }]
+    });
+    console.log(`[📧] Email sent for new eSundhed report: ${url}`);
   } catch (err) {
     console.error('[email] notifyNewEsundhedReport failed (logged, not thrown):', err && err.message ? err.message : err);
   }

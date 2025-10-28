@@ -144,57 +144,27 @@ app.get('/scrape/esundhed', async (_, res) => {
 
 // Temporary endpoint to test email sending. Call with POST /test-email?to=you@domain.tld
 app.post('/test-email', async (req, res) => {
-  const nodemailer = require('nodemailer');
-  const user = process.env.EMAIL_USER;
-  const pass = process.env.EMAIL_PASS;
-  const to = req.query.to || process.env.EMAIL_TO || user;
+  const { sendMail } = require('./lib/sendEmail');
+  const toQuery = req.query.to;
 
-  if (!user || !pass) {
-    console.error('[email-test] Missing EMAIL_USER or EMAIL_PASS');
-    return res.status(400).send('Missing EMAIL_USER or EMAIL_PASS environment vars');
-  }
-
-  // Try SMTPS (465) first, then fallback to STARTTLS (587) if 465 times out
-  const trySend = async (options) => {
-    const t = nodemailer.createTransport(options);
-    await t.verify();
-    return t.sendMail({ from: user, to, subject: 'va-report-watcher test email', text: 'This is a test email sent from va-report-watcher' });
-  };
-
-  // Option 1: SMTPS on 465
-  const opts465 = { host: 'smtp.gmail.com', port: 465, secure: true, auth: { user, pass } };
-  // Option 2: STARTTLS on 587
-  const opts587 = { host: 'smtp.gmail.com', port: 587, secure: false, requireTLS: true, auth: { user, pass } };
-
-  // If Sendinblue key is present, use the HTTP API (works from Render free plan)
-  if (process.env.SENDINBLUE_API_KEY) {
-    try {
-      const { sendViaSendinblue } = require('./lib/sendViaSendinblue');
-      await sendViaSendinblue({ from: user, to, subject: 'va-report-watcher test email', text: 'This is a test email sent from va-report-watcher via Sendinblue' });
-      console.log('[email-test] sent (sendinblue)');
-      return res.send('Email sent (sendinblue)');
-    } catch (err) {
-      console.error('[email-test] sendinblue failed:', err && err.message ? err.message : String(err));
-      return res.status(500).send('sendinblue failed: ' + (err && err.message ? err.message : String(err)));
-    }
+  // Global guard to prevent accidental sends from production while migrating providers
+  if (process.env.DISABLE_EMAIL === 'true') {
+    console.log('[email-test] DISABLE_EMAIL=true — rejecting test send');
+    return res.status(503).send('Email sending is disabled (DISABLE_EMAIL=true)');
   }
 
   try {
-    const info = await trySend(opts465);
-    console.log('[email-test] sent (465)', info && info.messageId ? info.messageId : info);
-    return res.send('Email sent (465)');
-  } catch (err465) {
-    console.warn('[email-test] 465 failed:', err465 && err465.message ? err465.message : String(err465));
-    // If 465 timed out or failed, try 587
-    try {
-      const info = await trySend(opts587);
-      console.log('[email-test] sent (587)', info && info.messageId ? info.messageId : info);
-      return res.send('Email sent (587)');
-    } catch (err587) {
-      console.error('[email-test] 587 failed:', err587 && err587.message ? err587.message : String(err587));
-      // Return both errors so you can diagnose in the response/logs
-      return res.status(500).send('465 error: ' + (err465 && err465.message ? err465.message : String(err465)) + ' | 587 error: ' + (err587 && err587.message ? err587.message : String(err587)));
-    }
+    const to = toQuery || process.env.TO_EMAIL || process.env.EMAIL_USER;
+    await sendMail({
+      to,
+      from: process.env.FROM_EMAIL || process.env.EMAIL_USER,
+      subject: 'va-report-watcher test email',
+      text: 'This is a test email sent from va-report-watcher'
+    });
+    return res.send('Email sent (queued)');
+  } catch (err) {
+    console.error('[email-test] failed:', err && err.message ? err.message : err);
+    return res.status(500).send('Test email failed: ' + (err && err.message ? err.message : String(err)));
   }
 });
 

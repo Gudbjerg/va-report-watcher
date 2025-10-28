@@ -4,7 +4,7 @@ const cheerio = require('cheerio');
 const https = require('https');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
-const nodemailer = require('nodemailer');
+const { sendMail } = require('../lib/sendEmail');
 
 const BASE_URL = 'https://www.va.gov/opal/nac/csas/index.asp';
 const FILE_TABLE = 'va_report';
@@ -111,33 +111,15 @@ async function saveLatestReport(month, hash) {
 
 async function notifyNewReport(url, buffer) {
   try {
-    if (process.env.SENDINBLUE_API_KEY) {
-      const { sendViaSendinblue } = require('../lib/sendViaSendinblue');
-      const toEnv = process.env.EMAIL_TO;
-      const to = toEnv && toEnv.includes(',') ? toEnv.split(',').map(s => s.trim()) : toEnv;
-      await sendViaSendinblue({
-        from: process.env.EMAIL_USER,
-        to,
-        subject: 'New VA Hearing Aid Report Available',
-        text: `A new report is available: ${url}`,
-        attachments: [{ filename: 'va-latest.xlsx', content: buffer }]
-      });
-      console.log(`[📧] VA email sent via Sendinblue: ${url}`);
-    } else {
-      const toEnv = process.env.EMAIL_TO;
-      const to = toEnv && toEnv.includes(',') ? toEnv.split(',').map(s => s.trim()) : toEnv;
-      await transporter.sendMail({
-        from: process.env.EMAIL_USER,
-        to,
-        subject: 'New VA Hearing Aid Report Available',
-        text: `A new report is available: ${url}`,
-        attachments: [{
-          filename: 'va-latest.xlsx',
-          content: buffer
-        }]
-      });
-      console.log(`[📧] VA email sent: ${url}`);
-    }
+    // Use sendEmail adapter. VA_TO_EMAIL can override TO_EMAIL -> EMAIL_USER.
+    await sendMail({
+      to: process.env.VA_TO_EMAIL || process.env.TO_EMAIL || process.env.EMAIL_USER,
+      from: process.env.VA_FROM_EMAIL || process.env.FROM_EMAIL || process.env.EMAIL_USER,
+      subject: 'New VA Hearing Aid Report Available',
+      text: `A new report is available: ${url}`,
+      attachments: [{ filename: 'va-latest.xlsx', content: buffer }]
+    });
+    console.log(`[📧] VA email sent: ${url}`);
   } catch (err) {
     console.error('[email] notifyNewReport failed (logged, not thrown):', err && err.message ? err.message : err);
   }
