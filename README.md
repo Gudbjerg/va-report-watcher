@@ -121,7 +121,6 @@ Current repo layout (trimmed to relevant files/folders):
 │   │   └── watchers/   # placeholder/dummy watcher for now
 │   └── kaxcap-index/
 │       └── watchers/   # placeholder/dummy watcher for now
-├── watchers/           # legacy path kept as shims -> forwards to archive/
 ├── archive/            # archived original copies (safe rollback)
 └── README.md
 ```
@@ -129,8 +128,8 @@ Current repo layout (trimmed to relevant files/folders):
 Notes:
 
 - `projects/*/watchers/*.js` is the canonical runtime location going forward. Each watcher exports the same minimal interface (eg. `runWatcher()` or `checkEsundhedUpdate()`), so the scheduler can call them uniformly.
-- `watchers/` currently contains small shim files that `require()` the archived originals under `archive/watchers/`. Those shims are temporary and maintain compatibility for any tooling or scripts still referencing the old path.
-- `archive/watchers/` contains the original full implementations (copied there during the migration). It's a safety snapshot so we can safely refactor without losing code. If you prefer, I can remove the `archive/` directory after you verify everything works.
+- Legacy `watchers/` path has been retired — the runtime now loads watchers from `projects/*/watchers/*`.
+- `archive/watchers/` contains original copies (safety snapshot). We keep `archive/` for rollback; remove it later when you're confident.
 - `projects/*/watchers/*` may include placeholder/dummy watchers (e.g. `kaxcap-index`) so the scheduler won't fail if that project is not yet implemented; these are deliberate and can be replaced with real scrapers later.
 
 ---
