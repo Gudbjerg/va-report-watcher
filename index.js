@@ -73,9 +73,10 @@ async function updateEsundhed() {
   }
 }
 
-// Cron Jobs: DK local hours (UTC+2)
-cron.schedule('0 4,8,12,16,20 * * *', updateVA); // 06, 10, 14, 18, 22 DK
-cron.schedule('0 4,8,12,16,20 * * *', updateEsundhed);
+// Cron Jobs: run at 06:00,10:00,14:00,18:00,22:00 in Europe/Copenhagen timezone
+// Use timezone-aware scheduling so times don't drift when the server is in UTC.
+cron.schedule('0 6,10,14,18,22 * * *', updateVA, { timezone: 'Europe/Copenhagen' });
+cron.schedule('0 6,10,14,18,22 * * *', updateEsundhed, { timezone: 'Europe/Copenhagen' });
 
 // Endpoints
 app.get('/', async (_, res) => {
@@ -84,7 +85,13 @@ app.get('/', async (_, res) => {
     if (!date) return '—';
     const parsed = (typeof date === 'string' || typeof date === 'number') ? new Date(date) : date;
     if (!(parsed instanceof Date) || Number.isNaN(parsed.getTime())) return '—';
-    return new Date(parsed.getTime() + 2 * 60 * 60 * 1000).toLocaleString('da-DK');
+    // Display times in Europe/Copenhagen (handles CET/CEST automatically) and include short tz name
+    try {
+      return parsed.toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen', timeZoneName: 'short' });
+    } catch (e) {
+      // If the environment doesn't support the timeZone option, fallback to a UTC+2 offset like before
+      return new Date(parsed.getTime() + 2 * 60 * 60 * 1000).toLocaleString('da-DK');
+    }
   }
 
   // If in-memory values are empty (for example after a restart), read latest persisted rows
