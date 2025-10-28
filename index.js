@@ -31,7 +31,22 @@ async function updateVA() {
   console.log(`[⏰] ${new Date().toISOString()} — Cron triggered: checkVA()`);
   const result = await checkVA();
   if (result?.month) {
-    lastVA = { time: new Date(), month: result.month };
+    // Read persisted updated_at from Supabase (same pattern as eSundhed)
+    try {
+      const { data, error } = await supabase
+        .from('va_report')
+        .select('updated_at')
+        .eq('id', 1)
+        .single();
+
+      const updatedAt = data?.updated_at ? new Date(data.updated_at) : null;
+
+      lastVA = { time: new Date(), month: result.month, updated_at: updatedAt };
+    } catch (e) {
+      console.error('[ui] fallback VA DB read failed:', e && e.message ? e.message : e);
+      // Fallback to in-memory values if DB read fails
+      lastVA = { time: new Date(), month: result.month, updated_at: null };
+    }
   }
 }
 
