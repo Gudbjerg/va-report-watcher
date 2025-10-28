@@ -23,7 +23,7 @@ const supabase = createClient(
 );
 
 // Status memory
-let lastVA = { time: null, month: null };
+let lastVA = { time: null, month: null, updated_at: null };
 let lastEsundhed = { time: null, filename: null, updated_at: null };
 
 // Patch watchers to update status
@@ -114,6 +114,7 @@ app.get('/', async (_, res) => {
             <h2 class="text-xl font-semibold mb-2">VA Report</h2>
             <p><strong>Last Check:</strong> ${toDK(lastVA.time)}</p>
             <p><strong>Latest Month:</strong> ${lastVA.month || '—'}</p>
+            <p><strong>Last Reported:</strong> ${toDK(lastVA.updated_at)}</p>
           </div>
 
           <div class="mt-6">
