@@ -4,7 +4,8 @@
   "description": "Watches the VA.gov page for monthly Hearing Aid Procurement Summary reports",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "smoke": "DISABLE_EMAIL=true node index.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.8",
