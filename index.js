@@ -144,7 +144,7 @@ async function renderDashboard(project = 'Universal') {
               </nav>
             </div>
             <div class="flex items-center space-x-4">
-              <a href="https://www.linkedin.com/" target="_blank" rel="noopener noreferrer" class="text-sm text-slate-600 hover:text-blue-600">LinkedIn</a>
+              <a href="https://www.linkedin.com/in/tobias-gudbjerg-59b893249/" target="_blank" rel="noopener noreferrer" class="text-sm text-slate-600 hover:text-blue-600">LinkedIn</a>
               <button id="mobileMenuBtn" class="md:hidden text-slate-600">☰</button>
             </div>
           </div>
@@ -158,25 +158,25 @@ async function renderDashboard(project = 'Universal') {
             <div class="grid md:grid-cols-2 gap-6">
               <div>
                 <h2 class="text-lg font-semibold">VA Report</h2>
-                <p class="mt-2"><strong>Last Check:</strong> ${toDK(lastVA.time)}</p>
+                <p class="mt-2"><strong>Last Check:</strong> <span data-iso="${lastVA.time ? lastVA.time.toISOString() : ''}">${toDK(lastVA.time)}</span></p>
                 <p><strong>Latest Month:</strong> ${lastVA.month || '—'}</p>
-                <p><strong>Last Reported:</strong> ${toDK(lastVA.updated_at)}</p>
+                <p><strong>Last Reported:</strong> <span data-iso="${lastVA.updated_at ? lastVA.updated_at.toISOString() : ''}">${toDK(lastVA.updated_at)}</span></p>
               </div>
 
               <div>
                 <h2 class="text-lg font-semibold">eSundhed Report</h2>
-                <p class="mt-2"><strong>Last Check:</strong> ${toDK(lastEsundhed.time)}</p>
+                <p class="mt-2"><strong>Last Check:</strong> <span data-iso="${lastEsundhed.time ? lastEsundhed.time.toISOString() : ''}">${toDK(lastEsundhed.time)}</span></p>
                 <p><strong>Latest File:</strong> ${lastEsundhed.filename || '—'}</p>
-                <p><strong>Last Reported:</strong> ${toDK(lastEsundhed.updated_at)}</p>
+                <p><strong>Last Reported:</strong> <span data-iso="${lastEsundhed.updated_at ? lastEsundhed.updated_at.toISOString() : ''}">${toDK(lastEsundhed.updated_at)}</span></p>
               </div>
             </div>
 
-            <div class="mt-6 text-sm text-gray-500">Last refreshed at ${toDK(new Date())}</div>
+            <div class="mt-6 text-sm text-gray-500">Last refreshed at <span data-iso="${new Date().toISOString()}">${toDK(new Date())}</span></div>
           </div>
         </main>
 
         <script>
-          // simple dropdown toggle
+          // simple dropdown toggle and local-time rendering
           document.addEventListener('DOMContentLoaded', function() {
             const btn = document.getElementById('reportsBtn');
             const menu = document.getElementById('reportsMenu');
@@ -187,6 +187,19 @@ async function renderDashboard(project = 'Universal') {
             if (mobile) {
               mobile.addEventListener('click', () => alert('Mobile menu — coming soon'));
             }
+
+            // Convert any elements with data-iso to the viewer's local timezone
+            document.querySelectorAll('[data-iso]').forEach(el => {
+              const iso = el.getAttribute('data-iso');
+              if (!iso) return;
+              try {
+                const d = new Date(iso);
+                // Format using user's locale; include short tz name
+                el.textContent = d.toLocaleString(undefined, { timeZoneName: 'short' });
+              } catch (e) {
+                // leave server-rendered fallback
+              }
+            });
           });
         </script>
       </body>
