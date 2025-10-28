@@ -104,15 +104,34 @@ npm start
 
 ## 📦 Project Structure
 
+Current repo layout (trimmed to relevant files/folders):
+
 ```
-.
-├── index.js
-├── .env
+.                         # project root (run server here)
+├── index.js            # server entry + scheduler and routes
+├── .env                # local env (not checked in)
 ├── package.json
-└── watchers
-    ├── va.js
-    └── esundhed.js
+├── lib/                # shared helpers (eg. lib/sendEmail.js)
+├── scripts/            # developer scripts (check-watchers, helpers)
+├── debug/              # optional debug helpers
+├── projects/           # new multi-project layout
+│   ├── analyst-scraper/
+│   │   └── watchers/   # real watcher implementations (va, esundhed)
+│   ├── ai-analyst/
+│   │   └── watchers/   # placeholder/dummy watcher for now
+│   └── kaxcap-index/
+│       └── watchers/   # placeholder/dummy watcher for now
+├── watchers/           # legacy path kept as shims -> forwards to archive/
+├── archive/            # archived original copies (safe rollback)
+└── README.md
 ```
+
+Notes:
+
+- `projects/*/watchers/*.js` is the canonical runtime location going forward. Each watcher exports the same minimal interface (eg. `runWatcher()` or `checkEsundhedUpdate()`), so the scheduler can call them uniformly.
+- `watchers/` currently contains small shim files that `require()` the archived originals under `archive/watchers/`. Those shims are temporary and maintain compatibility for any tooling or scripts still referencing the old path.
+- `archive/watchers/` contains the original full implementations (copied there during the migration). It's a safety snapshot so we can safely refactor without losing code. If you prefer, I can remove the `archive/` directory after you verify everything works.
+- `projects/*/watchers/*` may include placeholder/dummy watchers (e.g. `kaxcap-index`) so the scheduler won't fail if that project is not yet implemented; these are deliberate and can be replaced with real scrapers later.
 
 ---
 
@@ -132,6 +151,17 @@ npm start
 * Use `/scrape/va` or `/scrape/esundhed`
 * Check Supabase tables: `va_report`, `esundhed_report`
 * Inspect console logs
+
+### Developer utilities
+
+- `node scripts/check-watchers.js` — checks that the watcher modules resolve from the project root and prints their resolved paths. Run it from repo root (the script resolves project-root-relative paths).
+- When testing quick module loads in `node -e`, make sure you pass only JS code to `node -e` — avoid pasting shell commands (like `git commit`) into the `-e` string (that causes the SyntaxError you saw). Example correct usage:
+
+```bash
+node -e "console.log(require('./projects/analyst-scraper/watchers/va.js') ? 'va loaded' : 'va missing')"
+```
+
+If you accidentally run shell commands inside `node -e` you'll see errors like `SyntaxError: missing ) after argument list` — that's because the shell/Git commands are not valid JS source.
 
 ---
 
