@@ -79,22 +79,20 @@ cron.schedule('0 6,10,14,18,22 * * *', updateVA, { timezone: 'Europe/Copenhagen'
 cron.schedule('0 6,10,14,18,22 * * *', updateEsundhed, { timezone: 'Europe/Copenhagen' });
 
 // Endpoints
-app.get('/', async (_, res) => {
+// Helper: render the dashboard HTML for a given project name
+async function renderDashboard(project = 'Universal') {
   function toDK(date) {
-    // Accept Date, ISO string, or timestamp. Return '—' when missing or invalid.
     if (!date) return '—';
     const parsed = (typeof date === 'string' || typeof date === 'number') ? new Date(date) : date;
     if (!(parsed instanceof Date) || Number.isNaN(parsed.getTime())) return '—';
-    // Display times in Europe/Copenhagen (handles CET/CEST automatically) and include short tz name
     try {
       return parsed.toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen', timeZoneName: 'short' });
     } catch (e) {
-      // If the environment doesn't support the timeZone option, fallback to a UTC+2 offset like before
       return new Date(parsed.getTime() + 2 * 60 * 60 * 1000).toLocaleString('da-DK');
     }
   }
 
-  // If in-memory values are empty (for example after a restart), read latest persisted rows
+  // Ensure in-memory state is populated from DB if empty
   try {
     if (!lastEsundhed.filename) {
       const { data: latest, error } = await supabase
@@ -113,44 +111,97 @@ app.get('/', async (_, res) => {
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (!error && latestVa) lastVA = { time: latestVa.created_at, month: latestVa.month };
+      if (!error && latestVa) lastVA = { time: latestVa.created_at, month: latestVa.month, updated_at: latestVa.updated_at };
     }
   } catch (e) {
     console.error('[ui] fallback DB read failed:', e && e.message ? e.message : e);
   }
 
-  res.send(`
+  return `
     <html lang="en">
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Status Dashboard</title>
+        <title>${project} — Watcher Status</title>
         <script src="https://cdn.tailwindcss.com"></script>
       </head>
-      <body class="bg-gray-100 text-gray-800 font-sans p-6">
-        <div class="max-w-2xl mx-auto bg-white rounded-xl shadow-md p-6">
-          <h1 class="text-2xl font-bold mb-4">✅ Universal Watcher Status</h1>
-          <p class="mb-2">Service is <span class="font-semibold text-green-600">LIVE</span> and actively monitoring both VA & eSundhed reports.</p>
-
-          <div class="mt-6">
-            <h2 class="text-xl font-semibold mb-2">VA Report</h2>
-            <p><strong>Last Check:</strong> ${toDK(lastVA.time)}</p>
-            <p><strong>Latest Month:</strong> ${lastVA.month || '—'}</p>
-            <p><strong>Last Reported:</strong> ${toDK(lastVA.updated_at)}</p>
+      <body class="bg-gray-50 text-gray-800 font-sans">
+        <header class="bg-white shadow">
+          <div class="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+              <div class="text-2xl font-bold text-slate-800">va-report-watcher</div>
+              <nav class="hidden md:flex items-center space-x-3 text-sm text-slate-600">
+                <a href="/" class="hover:text-slate-900">Home</a>
+                <div class="relative">
+                  <button id="reportsBtn" class="hover:text-slate-900">Reports ▾</button>
+                  <div id="reportsMenu" class="hidden absolute mt-2 bg-white border rounded shadow-md py-1">
+                    <a class="block px-4 py-2 text-sm hover:bg-gray-100" href="/project/va">VA</a>
+                    <a class="block px-4 py-2 text-sm hover:bg-gray-100" href="/project/esundhed">eSundhed</a>
+                    <a class="block px-4 py-2 text-sm hover:bg-gray-100" href="/project/other">Other</a>
+                  </div>
+                </div>
+                <a href="/about" class="hover:text-slate-900">About</a>
+              </nav>
+            </div>
+            <div class="flex items-center space-x-4">
+              <a href="https://www.linkedin.com/" target="_blank" rel="noopener noreferrer" class="text-sm text-slate-600 hover:text-blue-600">LinkedIn</a>
+              <button id="mobileMenuBtn" class="md:hidden text-slate-600">☰</button>
+            </div>
           </div>
+        </header>
 
-          <div class="mt-6">
-            <h2 class="text-xl font-semibold mb-2">eSundhed Report</h2>
-            <p><strong>Last Check:</strong> ${toDK(lastEsundhed.time)}</p>
-            <p><strong>Latest File:</strong> ${lastEsundhed.filename || '—'}</p>
-            <p><strong>Last Reported:</strong> ${toDK(lastEsundhed.updated_at)}</p>
+        <main class="max-w-4xl mx-auto p-6">
+          <div class="bg-white rounded-xl shadow p-6">
+            <h1 class="text-2xl font-bold mb-2">✅ ${project} Status</h1>
+            <p class="mb-4">Service is <span class="font-semibold text-green-600">LIVE</span> and actively monitoring reports.</p>
+
+            <div class="grid md:grid-cols-2 gap-6">
+              <div>
+                <h2 class="text-lg font-semibold">VA Report</h2>
+                <p class="mt-2"><strong>Last Check:</strong> ${toDK(lastVA.time)}</p>
+                <p><strong>Latest Month:</strong> ${lastVA.month || '—'}</p>
+                <p><strong>Last Reported:</strong> ${toDK(lastVA.updated_at)}</p>
+              </div>
+
+              <div>
+                <h2 class="text-lg font-semibold">eSundhed Report</h2>
+                <p class="mt-2"><strong>Last Check:</strong> ${toDK(lastEsundhed.time)}</p>
+                <p><strong>Latest File:</strong> ${lastEsundhed.filename || '—'}</p>
+                <p><strong>Last Reported:</strong> ${toDK(lastEsundhed.updated_at)}</p>
+              </div>
+            </div>
+
+            <div class="mt-6 text-sm text-gray-500">Last refreshed at ${toDK(new Date())}</div>
           </div>
+        </main>
 
-          <div class="mt-6 text-sm text-gray-500">Last refreshed at ${toDK(new Date())}</div>
-        </div>
+        <script>
+          // simple dropdown toggle
+          document.addEventListener('DOMContentLoaded', function() {
+            const btn = document.getElementById('reportsBtn');
+            const menu = document.getElementById('reportsMenu');
+            if (btn && menu) {
+              btn.addEventListener('click', () => menu.classList.toggle('hidden'));
+            }
+            const mobile = document.getElementById('mobileMenuBtn');
+            if (mobile) {
+              mobile.addEventListener('click', () => alert('Mobile menu — coming soon'));
+            }
+          });
+        </script>
       </body>
     </html>
-  `);
+  `;
+}
+
+// Root & project routes
+app.get('/', async (_, res) => {
+  res.send(await renderDashboard('Universal'));
+});
+
+app.get('/project/:name', async (req, res) => {
+  const name = req.params.name || 'Project';
+  res.send(await renderDashboard(name.charAt(0).toUpperCase() + name.slice(1)));
 });
 
 app.get('/ping', (_, res) => res.send('pong'));
