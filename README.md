@@ -122,7 +122,7 @@ npm start
 
 * Add env vars in Render dashboard (do NOT store API keys or secrets in the repo)
 * Start command: `npm start`
-* Set `DISABLE_EMAIL=true` while migrating providers or appealing Brevo suspension
+* Set `DISABLE_EMAIL=true` while migrating providers
 * UptimeRobot pings `/ping` every 5 min
 
 ---
