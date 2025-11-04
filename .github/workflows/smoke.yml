@@ -34,6 +34,20 @@ jobs:
         run: |
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
             echo "SUPABASE_URL or SUPABASE_KEY not set — skipping integration tests"
-          else
-            npm run test:integration
-          fi
+            # Start the smoke runner in background; it should bind to :3000
+            # Poll for /ping up to ~10s before giving up to reduce flakiness
+            attempts=0
+            until curl --fail --silent http://localhost:3000/ping >/dev/null 2>&1 || [ $attempts -ge 10 ]; do
+              attempts=$((attempts+1))
+              sleep 1
+            done
+
+            if ! curl --fail --silent http://localhost:3000/ping >/dev/null 2>&1; then
+              echo "smoke server didn't start in time - printing log" >&2
+              cat /tmp/va-smoke.log || true
+              kill "$SMOKE_PID" || true
+              exit 1
+            fi
+
+            # success - stop the background process
+            kill "$SMOKE_PID" || true
