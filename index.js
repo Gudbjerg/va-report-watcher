@@ -186,7 +186,7 @@ async function renderDashboard(project = 'Universal') {
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (!error && latest) lastEsundhed = { time: latest.created_at, filename: latest.filename, updated_at: latest.updated_at };
+      if (!error && latest) lastEsundhed = { time: latest.created_at ? new Date(latest.created_at) : null, filename: latest.filename, updated_at: latest.updated_at ? new Date(latest.updated_at) : null };
     }
 
     if (!lastVA.time) {
@@ -196,7 +196,7 @@ async function renderDashboard(project = 'Universal') {
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (!error && latestVa) lastVA = { time: latestVa.created_at, month: latestVa.month, updated_at: latestVa.updated_at };
+      if (!error && latestVa) lastVA = { time: latestVa.created_at ? new Date(latestVa.created_at) : null, month: latestVa.month, updated_at: latestVa.updated_at ? new Date(latestVa.updated_at) : null };
     }
   } catch (e) {
     console.error('[ui] fallback DB read failed:', e && e.message ? e.message : e);
