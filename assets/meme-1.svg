@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+  <rect width="120" height="120" rx="6" fill="#F8FAFC" />
+  <text x="12" y="32" font-family="Verdana, Arial" font-size="10" fill="#0F172A">When rebalance</text>
+  <text x="12" y="52" font-family="Verdana, Arial" font-size="10" fill="#0F172A">meets market moves</text>
+  <circle cx="90" cy="35" r="16" fill="#D6A64A" />
+  <text x="84" y="40" font-family="Verdana, Arial" font-size="12" fill="#fff">:)</text>
+</svg>

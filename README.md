@@ -229,163 +229,63 @@ Main project folder containing backend and frontend components.
 * `run_pipeline.js`: Master orchestrator. Sequentially runs:
 
   * `scraper.js`: Download earnings PDFs
-  * `extractor.js`: Extracts actuals
-  * `consensus_extractor.js`: Extracts consensus
-  * `compare_and_analyze.js`: GPT-aided comparison
-  * `send_report.js`: Shares output
-  * `upload_report.js`: Final upload and archival
-* `send_report.js`: Handles distribution of final reports (email, storage).
-* `upload_report.js`: Adds newly scraped/uploaded reports to the system.
-* `scraper.js`: Scrapes the latest report PDFs (critical component).
-* `server.js`: Hosts the frontend and/or any internal APIs.
+  # MarketBuddy — ABG internal
 
-### Data
+  MarketBuddy is an internal ABG toolkit for monitoring index rebalances, scraping watcher reports, and producing rapid AI-driven commentary for the sales desk.
 
-* `/data/{ticker}/`
+  Key components
 
-  * `extracted_financials.json`: AI-parsed actual results
-  * `consensus_extracted.json`: Structured market estimates
-  * `report_summary.json`: Final merged insights
-  * `summary_analysis.txt`: Raw earnings call summary
-  * `summary_consensus.txt`: Consensus expectations summary
+  - Watchers — site-specific scrapers that detect and persist newly published reports (VA, eSundhed, etc.).
+  - Index Rebalancer — computes and stores rebalancing proposals for review and execution.
+  - AI Analyst — generates concise, plain-language comments on earnings deviations and rebalances so sales can react fast.
 
-### Configuration
+  Usage (quick)
 
-* `/config/{ticker}.json`: Declares metric categories and path dependencies
-* `/mappings/{ticker}.keymap.json`: Aliases map for normalized comparison (e.g. "eps" → "diluted\_earnings\_per\_share\_dkk")
-* `/mappings/{ticker}.labelmap.json`: User-friendly labels for UI and summaries
-* `/prompts/{ticker}.earnings.prompt.json`: Custom GPT prompt for earnings extraction
-* `/prompts/{ticker}.consensus.prompt.json`: Custom GPT prompt for consensus parsing
+  1. Install dependencies
 
-### Logs
+  ```bash
+  npm install
+  ```
 
-* `/logs/{ticker}.txt`: Execution log for the pipeline
-* `/logs/{ticker}.consensus_prompt_log.txt`: Raw GPT logs from consensus extraction
+  2. Configure environment
 
-### Utilities
+  Create a `.env` with the minimum required variables. For local dev, at least set `PORT` and `DISABLE_EMAIL=true` to avoid accidental emails.
 
-* `/utils/configChecker.js`: Ensures configs are well-formed
-* `/utils/schemaValidator.js`: Ensures outputs are valid JSON
+  Required (recommended for local dev):
 
----
+  ```env
+  PORT=3000
+  DISABLE_EMAIL=true
+  ```
 
-## Frontend Structure - `/frontend`
+  Optional (production / Render):
 
-### Files
+  ```env
+  SUPABASE_URL=...            # optional — used for persisted proposals and reports
+  SUPABASE_KEY=...
+  EMAIL_USER=...              # SMTP user (if you enable email)
+  EMAIL_PASS=...
+  ```
 
-* `index.html`: Main UI entrypoint
-* `script.js`: Fetches and displays data dynamically
-* `styles.css`: Presentation layer and styles
+  3. Start locally
 
-### Data
+  ```bash
+  npm start
+  ```
 
-* `/reports/{ticker}/`: Final structured JSONs exposed for UI rendering
+  Web UI
 
----
+  - `/` — Dashboard (watchers, memes, quick links)
+  - `/watchers` — List available watchers and run them manually
+  - `/product/rebalancer` — Rebalancer proposals (requires Supabase to persist)
 
-## How It Works
+  Contact
 
-1. Place or scrape latest earnings PDFs to `/uploads/{ticker}/`
-2. Configure metric mappings and prompts for the ticker
-3. Run `node run_pipeline.js <ticker>`
+  Maintained by Tobias Gudbjerg for ABG internal use. Contact Tobias via LinkedIn: https://www.linkedin.com/in/tobias-gudbjerg-59b893249/
+
+  License
+
+  MIT
+
+  If you'd like a shorter or differently phrased README (internal-only, public-facing, or developer-focused), tell me which tone and I will update it accordingly.
 4. The pipeline:
-
-   * Downloads and extracts financials
-   * Runs GPT to summarize and extract consensus
-   * Matches actuals vs expectations
-   * Groups differences into core/specific/other
-   * Writes summaries and JSONs
-   * Uploads results to frontend folders
-
----
-
-## Development & Deployment
-
-### Requirements
-
-* Node.js v18+
-* `.env` file with:
-
-```
-OPENAI_API_KEY=sk-xxxxx
-```
-
-To test:
-
-```sh
-node run_pipeline.js novonordisk
-```
-
----
-
-## 🏢 How to Add a New Company
-
-### 1. 🔠 Choose a Ticker ID
-
-Use lowercase, e.g. `acme`, `coloplast`, etc. It determines:
-
-* Config: `config/acme.json`
-* Mappings: `mappings/acme.keymap.json`, `labelmap.json`
-* Upload path: `uploads/acme/`
-* Report output: `frontend/reports/acme/`
-
-### 2. 📁 Required Files
-
-#### a. `config/acme.json`
-
-```json
-{
-  "keymap": "mappings/acme.keymap.json",
-  "labelmap": "mappings/acme.labelmap.json",
-  "prompt_file": "prompts/acme.json"
-}
-```
-
-#### b. `prompts/acme.*.prompt.json`
-
-Define GPT prompt content for extraction.
-
-#### c. `mappings/*.json`
-
-Alias mapping (e.g. "eps" → "diluted\_earnings\_per\_share\_dkk")
-
----
-
-## Credits
-
-Created and maintained by Tobias + Grimoire GPT
-
----
-## Roadmap & Infrastructure (short-term)
-
-This project is evolving toward two major new features: an index rebalancer (FactSet integration) and an AI Analyst. Below is a concise roadmap and infrastructure notes to get us started.
-
-1) FactSet / Index Rebalancer
-  - Add `lib/factset.js` (client) to fetch index constituents and metadata. A mock mode (`FACTSET_MOCK=true`) is provided for local dev.
-  - Add a worker `workers/rebalancer.js` which computes rebalancing proposals and persists them in Supabase (`index_proposals` table). The worker is idempotent and can be triggered manually or scheduled.
-  - Expose a dashboard tab `/product/rebalancer` that lists proposals and allows review/approval.
-
-2) AI Analyst
-  - Create `services/ai-analyst/` to ingest reports and proposals, compute embeddings, and expose a query API connected to an LLM provider.
-  - Use Supabase (vectors) or an external vector DB for embeddings; store summaries in `ai_summaries`.
-  - Add a simple UI panel in the dashboard for asking the analyst questions about a given report.
-
-3) Security & CI
-  - Keep secrets in Render/GitHub Actions secrets. Use the runtime-guarded CI pattern already present in `.github/workflows/smoke.yml`.
-  - Add `FACTSET_API_KEY` and `AI_API_KEY` guards for integration tests.
-
-4) Staging & Rollout
-  - Create a staging environment in Render and test integrations there before enabling production runs/executions.
-
-Development notes
-  - We provided skeletons in `lib/factset.js`, `workers/rebalancer.js`, and `services/ai-analyst/index.js` as starting points.
-  - For local development, use `FACTSET_MOCK=true` to avoid calling FactSet until the client integration is ready.
-
-If you want, I can now:
-  - Add the Supabase table migration SQL for `index_proposals` and `ai_summaries`.
-  - Scaffold UI routes and a small server-side page for `/product/rebalancer` in `index.js`.
-  - Create unit tests for `lib/factset.js` mock mode.
-
----
-
-*Grimoire AutoDoc v2.1*
