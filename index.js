@@ -479,6 +479,23 @@ app.get('/watchers', async (req, res) => {
     try { return parsed.toLocaleString('da-DK', { timeZone: 'Europe/Copenhagen', timeZoneName: 'short' }); } catch (e) { return parsed.toString(); }
   }
 
+  // Small helper to render a human-friendly relative time (server-side).
+  // Outputs strings like "just now", "5m ago", "3h ago", "2d ago" or '—'.
+  function formatRelative(date) {
+    if (!date) return '—';
+    const parsed = (typeof date === 'string' || typeof date === 'number') ? new Date(date) : date;
+    if (!(parsed instanceof Date) || Number.isNaN(parsed.getTime())) return '—';
+    const now = new Date();
+    const diff = Math.floor((now.getTime() - parsed.getTime()) / 1000); // seconds
+    if (diff < 0) return 'just now';
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    if (diff < 7 * 86400) return Math.floor(diff / 86400) + 'd ago';
+    // older than a week: show localized short date
+    try { return parsed.toLocaleDateString('da-DK', { timeZone: 'Europe/Copenhagen' }); } catch (e) { return parsed.toDateString(); }
+  }
+
   const rows = discoveredWatchers.map(w => {
     const last_iso = (w.key === 'va') ? (lastVA.time ? lastVA.time.toISOString() : '') : (lastEsundhed.time ? lastEsundhed.time.toISOString() : '');
     const reported_iso = (w.key === 'va') ? (lastVA.updated_at ? lastVA.updated_at.toISOString() : '') : (lastEsundhed.updated_at ? lastEsundhed.updated_at.toISOString() : '');
@@ -503,7 +520,9 @@ app.get('/watchers', async (req, res) => {
       last_iso,
       reported_iso,
       last_check: toDK(last_iso),
+      last_check_relative: formatRelative(last_iso),
       last_reported: toDK(reported_iso),
+      last_reported_relative: formatRelative(reported_iso),
       status,
       statusClass
     };
@@ -529,8 +548,10 @@ app.get('/watchers', async (req, res) => {
                       <span class="px-2 py-0.5 rounded-full text-xs font-medium ${r.statusClass}">${r.status}</span>
                     </div>
                     <div class="text-xs text-slate-500 mt-1">
-                      <div>Last check: <span data-iso="${r.last_iso || ''}">${r.last_check}</span></div>
-                      <div>Last reported: <span data-iso="${r.reported_iso || ''}">${r.last_reported}</span></div>
+                      <div>Last check: <span title="${r.last_check}" data-iso="${r.last_iso || ''}">${r.last_check_relative || r.last_check}</span></div>
+                      <div>Last reported: <span class="text-sm font-semibold text-slate-800">${r.last_reported_relative || r.last_reported}</span>
+                        <span class="text-xs text-slate-400 ml-2" data-iso="${r.reported_iso || ''}">${r.last_reported}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
