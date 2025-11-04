@@ -482,6 +482,19 @@ app.get('/watchers', async (req, res) => {
   const rows = discoveredWatchers.map(w => {
     const last_iso = (w.key === 'va') ? (lastVA.time ? lastVA.time.toISOString() : '') : (lastEsundhed.time ? lastEsundhed.time.toISOString() : '');
     const reported_iso = (w.key === 'va') ? (lastVA.updated_at ? lastVA.updated_at.toISOString() : '') : (lastEsundhed.updated_at ? lastEsundhed.updated_at.toISOString() : '');
+    // derive a simple status: 'New report' when reported_iso > last_iso
+    let status = 'Up to date';
+    let statusClass = 'bg-slate-100 text-slate-700';
+    try {
+      if (reported_iso && last_iso && reported_iso > last_iso) {
+        status = 'New report';
+        statusClass = 'bg-yellow-100 text-yellow-800';
+      } else if (!last_iso) {
+        status = 'No check';
+        statusClass = 'bg-gray-100 text-slate-500';
+      }
+    } catch (e) { }
+
     return {
       key: w.key,
       name: w.name,
@@ -490,7 +503,9 @@ app.get('/watchers', async (req, res) => {
       last_iso,
       reported_iso,
       last_check: toDK(last_iso),
-      last_reported: toDK(reported_iso)
+      last_reported: toDK(reported_iso),
+      status,
+      statusClass
     };
   });
 
@@ -505,19 +520,22 @@ app.get('/watchers', async (req, res) => {
           <p class="text-sm text-gray-600 mb-4">Watchers run approximately every 3 hours. Times shown are Europe/Copenhagen (CET/CEST depending on daylight saving). To be added to the mailing list for a specific scraper or to request scraping of a website or dataset, please contact Tobias via <a href="https://www.linkedin.com/in/tobias-gudbjerg-59b893249/" target="_blank" rel="noopener" class="text-blue-600">LinkedIn</a>.</p>
           <div class="grid grid-cols-1 gap-4">
             ${rows.map(r => `
-              <div class="p-4 border rounded flex items-center justify-between gap-4">
+              <div class="p-3 border rounded flex items-center justify-between gap-4">
                 <div class="flex items-center gap-4">
-                  <div class="w-12 h-12 bg-slate-100 rounded flex items-center justify-center text-sm font-semibold text-slate-700">${r.name.split(' ').slice(0, 2).map(s => s[0] || '').join('')}</div>
+                  <div class="w-10 h-10 bg-slate-100 rounded flex items-center justify-center text-sm font-semibold text-slate-700">${r.name.split(' ').slice(0, 2).map(s => s[0] || '').join('')}</div>
                   <div>
-                    <a class="text-blue-600 font-semibold text-xl md:text-2xl" href="/watcher/${r.key}">${r.name}</a>
-                    <div class="text-sm text-slate-700 mt-1">
-                      <div>Last check: <span class="text-base font-medium text-slate-800" data-iso="${r.last_iso || ''}">${r.last_check}</span></div>
-                      <div>Last reported: <span class="text-base font-medium text-slate-800" data-iso="${r.reported_iso || ''}">${r.last_reported}</span></div>
+                    <div class="flex items-center gap-3">
+                      <a class="text-blue-600 font-semibold text-lg" href="/watcher/${r.key}">${r.name}</a>
+                      <span class="px-2 py-0.5 rounded-full text-xs font-medium ${r.statusClass}">${r.status}</span>
+                    </div>
+                    <div class="text-xs text-slate-500 mt-1">
+                      <div>Last check: <span data-iso="${r.last_iso || ''}">${r.last_check}</span></div>
+                      <div>Last reported: <span data-iso="${r.reported_iso || ''}">${r.last_reported}</span></div>
                     </div>
                   </div>
                 </div>
                 <div class="mt-0">
-                  <a class="inline-block bg-yellow-400 hover:bg-yellow-500 text-slate-900 px-4 py-2 rounded shadow-sm" href="${r.route}">Run now</a>
+                  <a class="inline-block bg-yellow-400 hover:bg-yellow-500 text-slate-900 px-4 py-2 rounded shadow-sm w-28 text-center" href="${r.route}">Run now</a>
                 </div>
               </div>
             `).join('')}
