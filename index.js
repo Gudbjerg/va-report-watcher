@@ -214,7 +214,7 @@ async function renderDashboard(project = 'Universal') {
         <header class="bg-white shadow">
           <div class="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
             <div class="flex items-center space-x-4">
-              <div class="text-2xl font-bold text-slate-800">va-report-watcher</div>
+              <div class="text-2xl font-bold text-slate-800">MarketBuddy</div>
               <nav class="hidden md:flex items-center space-x-3 text-sm text-slate-600">
                 <a href="/" class="hover:text-slate-900">Home</a>
                 <div class="relative">
@@ -392,8 +392,8 @@ app.post('/test-email', async (req, res) => {
     await sendMail({
       to,
       from: process.env.FROM_EMAIL || process.env.EMAIL_USER,
-      subject: 'va-report-watcher test email',
-      text: 'This is a test email sent from va-report-watcher'
+      subject: 'MarketBuddy test email',
+      text: 'This is a test email sent from MarketBuddy'
     });
     return res.send('Email sent (queued)');
   } catch (err) {

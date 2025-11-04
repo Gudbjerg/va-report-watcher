@@ -1,4 +1,4 @@
-# Kaxcap Suite (formerly "VA Report Watcher")
+# MarketBuddy (formerly "VA Report Watcher")
 
 This repository now contains a small product suite of related services for monitoring, analyzing, and proposing changes to financial/healthcare data. The original watcher/scraper is still present, but the project scope has expanded to three products:
 
@@ -28,8 +28,8 @@ Notes: the original watcher functionality (VA / eSundhed) is preserved under `pr
 ### 1. Clone Repo
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/va-report-watcher.git
-cd va-report-watcher
+git clone https://github.com/Gudbjerg/marketbuddy.git
+cd marketbuddy
 ```
 
 ### 2. Install Dependencies

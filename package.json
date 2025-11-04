@@ -1,7 +1,7 @@
 {
-  "name": "va-watcher",
+  "name": "marketbuddy",
   "version": "1.0.0",
-  "description": "Watches the VA.gov page for monthly Hearing Aid Procurement Summary reports",
+  "description": "MarketBuddy — suite for watchers, index rebalancer and AI analyst",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
