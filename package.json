@@ -5,7 +5,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "smoke": "DISABLE_EMAIL=true node index.js"
+    "smoke": "DISABLE_EMAIL=true node index.js",
+    "test": "npm run test:unit",
+    "test:unit": "jest --runInBand",
+    "test:integration": "node tests/run-all.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.8",
@@ -15,6 +18,9 @@
     "node-cron": "^3.0.2",
     "node-fetch": "^2.6.7",
     "nodemailer": "^6.9.8"
+  },
+  "devDependencies": {
+    "jest": "^29.6.1"
   },
   "engines": {
     "node": ">=14"

@@ -47,6 +47,8 @@ let lastEsundhed = { time: null, filename: null, updated_at: null };
 // Discovered runtime functions (set by discoverWatchers)
 let checkVAFn = null;
 let checkEsundhedFn = null;
+// Lightweight registry of discovered watchers for the dashboard
+let discoveredWatchers = [];
 
 function discoverWatchers() {
   // Try project-first locations
@@ -56,6 +58,7 @@ function discoverWatchers() {
       const mod = require(vaPath);
       checkVAFn = mod.runWatcher || mod;
       console.log('[loader] loaded VA watcher from', vaPath);
+      discoveredWatchers.push({ key: 'va', name: 'VA', path: vaPath, route: '/scrape/va' });
     }
   } catch (e) {
     console.warn('[loader] could not load project VA watcher:', e && e.message ? e.message : e);
@@ -67,6 +70,7 @@ function discoverWatchers() {
       const mod = require(esPath);
       checkEsundhedFn = mod.checkEsundhedUpdate || mod;
       console.log('[loader] loaded eSundhed watcher from', esPath);
+      discoveredWatchers.push({ key: 'esundhed', name: 'eSundhed', path: esPath, route: '/scrape/esundhed' });
     }
   } catch (e) {
     console.warn('[loader] could not load project eSundhed watcher:', e && e.message ? e.message : e);
@@ -78,6 +82,7 @@ function discoverWatchers() {
       const legacy = require('./watchers/va');
       checkVAFn = legacy.runWatcher || legacy;
       console.log('[loader] falling back to ./watchers/va');
+      discoveredWatchers.push({ key: 'va', name: 'VA (legacy)', path: path.join(__dirname, 'watchers', 'va.js'), route: '/scrape/va' });
     } catch (e) {
       console.warn('[loader] no VA watcher available:', e && e.message ? e.message : e);
     }
@@ -88,6 +93,7 @@ function discoverWatchers() {
       const legacy = require('./watchers/esundhed');
       checkEsundhedFn = legacy.checkEsundhedUpdate || legacy;
       console.log('[loader] falling back to ./watchers/esundhed');
+      discoveredWatchers.push({ key: 'esundhed', name: 'eSundhed (legacy)', path: path.join(__dirname, 'watchers', 'esundhed.js'), route: '/scrape/esundhed' });
     } catch (e) {
       console.warn('[loader] no eSundhed watcher available:', e && e.message ? e.message : e);
     }
@@ -248,6 +254,17 @@ async function renderDashboard(project = 'Universal') {
                 <p><strong>Latest File:</strong> ${lastEsundhed.filename || '—'}</p>
                 <p><strong>Last Reported:</strong> <span data-iso="${lastEsundhed.updated_at ? lastEsundhed.updated_at.toISOString() : ''}">${toDK(lastEsundhed.updated_at)}</span></p>
               </div>
+            </div>
+
+            <div class="mt-6 bg-white rounded-xl shadow p-4">
+              <h3 class="text-lg font-semibold">Discovered watchers</h3>
+              <ul class="mt-3 text-sm text-slate-700">
+                ${discoveredWatchers.map(w => {
+    const last = (w.key === 'va') ? (lastVA.time ? lastVA.time.toISOString() : '') : (lastEsundhed.time ? lastEsundhed.time.toISOString() : '');
+    const reported = (w.key === 'va') ? (lastVA.updated_at ? lastVA.updated_at.toISOString() : '') : (lastEsundhed.updated_at ? lastEsundhed.updated_at.toISOString() : '');
+    return `<li class="mt-2"><a href="${w.route}" class="text-blue-600 hover:underline">${w.name}</a> — last check: <span data-iso="${last}">${toDK(last)}</span> — last reported: <span data-iso="${reported}">${toDK(reported)}</span></li>`;
+  }).join('')}
+              </ul>
             </div>
 
             <div class="mt-6 text-sm text-gray-500">Last refreshed at <span data-iso="${new Date().toISOString()}">${toDK(new Date())}</span></div>
