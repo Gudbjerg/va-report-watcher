@@ -325,6 +325,57 @@ app.get('/scrape/esundhed', async (_, res) => {
   res.send('eSundhed scrape complete!');
 });
 
+// API: list persisted rebalancer proposals
+app.get('/api/rebalancer/proposals', async (_, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('index_proposals')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+    if (error) return res.status(500).json({ error: error.message || error });
+    return res.json({ proposals: data });
+  } catch (e) {
+    console.error('[api] rebalancer proposals failed:', e && e.message ? e.message : e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
+// Product page: Rebalancer dashboard
+app.get('/product/rebalancer', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('index_proposals')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    const rows = (error || !data) ? [] : data;
+
+    const listItems = rows.map(r => {
+      const payload = r.payload || {};
+      const indexId = payload.indexId || payload.index_id || 'unknown';
+      const created = r.created_at ? new Date(r.created_at).toISOString() : '';
+      return `<li class="mb-3 border rounded p-3 bg-gray-50"><strong>${indexId}</strong> — ${created}<pre class="mt-2 text-xs">${JSON.stringify(payload, null, 2)}</pre></li>`;
+    }).join('');
+
+    res.send(`
+      <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><script src="https://cdn.tailwindcss.com"></script></head>
+      <body class="bg-gray-50 p-6">
+        <div class="max-w-4xl mx-auto bg-white p-6 rounded shadow">
+          <h1 class="text-2xl font-bold mb-4">Index Rebalancer — Proposals</h1>
+          <p class="text-sm text-gray-600 mb-4">This page shows persisted rebalancing proposals (from Supabase).</p>
+          <ul>${listItems || '<li class="text-sm text-gray-500">No proposals found</li>'}</ul>
+          <div class="mt-6"><a href="/" class="text-blue-600">← Back</a></div>
+        </div>
+      </body></html>
+    `);
+  } catch (e) {
+    console.error('[ui] rebalancer page failed:', e && e.message ? e.message : e);
+    res.status(500).send('Failed to load rebalancer proposals');
+  }
+});
+
 // Temporary endpoint to test email sending. Call with POST /test-email?to=you@domain.tld
 app.post('/test-email', async (req, res) => {
   const { sendMail } = require('./lib/sendEmail');
