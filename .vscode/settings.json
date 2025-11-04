@@ -1,7 +1,0 @@
-{
-    // Map GitHub Actions workflow schema to the workflows folder so YAML extension
-    // validates these files correctly and avoids false positives about expressions.
-    "yaml.schemas": {
-        "https://json.schemastore.org/github-workflow.json": ".github/workflows/*"
-    }
-}
