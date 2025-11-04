@@ -4,3 +4,5 @@ node_modules/
 
 test-esundhed.js
 test-supabase.js
+
+.DS_Store

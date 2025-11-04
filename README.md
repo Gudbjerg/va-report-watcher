@@ -164,6 +164,22 @@ If you accidentally run shell commands inside `node -e` you'll see errors like `
 
 ---
 
+## CI & Tests
+
+This repo includes a small GitHub Actions smoke workflow and local test helpers.
+
+- Unit tests (fast, run in CI):
+  - Run locally: `npm test` (uses Jest)
+- Integration tests (touch Supabase, guarded in CI):
+  - Run locally (requires Supabase env vars): `npm run test:integration`
+- Smoke server (start app without sending emails):
+  - Run locally: `npm run smoke` (sets `DISABLE_EMAIL=true`)
+
+CI behavior (summary): the workflow starts the app with `DISABLE_EMAIL=true`, pings `/ping`, runs the unit tests always, and only runs integration tests when Supabase secrets are provided to the runner. This gives quick pre-merge feedback while keeping secrets out of forked PRs.
+
+
+---
+
 ## 📄 License
 
 MIT
@@ -337,6 +353,37 @@ Alias mapping (e.g. "eps" → "diluted\_earnings\_per\_share\_dkk")
 ## Credits
 
 Created and maintained by Tobias + Grimoire GPT
+
+---
+## Roadmap & Infrastructure (short-term)
+
+This project is evolving toward two major new features: an index rebalancer (FactSet integration) and an AI Analyst. Below is a concise roadmap and infrastructure notes to get us started.
+
+1) FactSet / Index Rebalancer
+  - Add `lib/factset.js` (client) to fetch index constituents and metadata. A mock mode (`FACTSET_MOCK=true`) is provided for local dev.
+  - Add a worker `workers/rebalancer.js` which computes rebalancing proposals and persists them in Supabase (`index_proposals` table). The worker is idempotent and can be triggered manually or scheduled.
+  - Expose a dashboard tab `/product/rebalancer` that lists proposals and allows review/approval.
+
+2) AI Analyst
+  - Create `services/ai-analyst/` to ingest reports and proposals, compute embeddings, and expose a query API connected to an LLM provider.
+  - Use Supabase (vectors) or an external vector DB for embeddings; store summaries in `ai_summaries`.
+  - Add a simple UI panel in the dashboard for asking the analyst questions about a given report.
+
+3) Security & CI
+  - Keep secrets in Render/GitHub Actions secrets. Use the runtime-guarded CI pattern already present in `.github/workflows/smoke.yml`.
+  - Add `FACTSET_API_KEY` and `AI_API_KEY` guards for integration tests.
+
+4) Staging & Rollout
+  - Create a staging environment in Render and test integrations there before enabling production runs/executions.
+
+Development notes
+  - We provided skeletons in `lib/factset.js`, `workers/rebalancer.js`, and `services/ai-analyst/index.js` as starting points.
+  - For local development, use `FACTSET_MOCK=true` to avoid calling FactSet until the client integration is ready.
+
+If you want, I can now:
+  - Add the Supabase table migration SQL for `index_proposals` and `ai_summaries`.
+  - Scaffold UI routes and a small server-side page for `/product/rebalancer` in `index.js`.
+  - Create unit tests for `lib/factset.js` mock mode.
 
 ---
 
