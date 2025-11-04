@@ -285,7 +285,7 @@ async function renderDashboard(project = 'Universal') {
       <section class="bg-gradient-to-r from-slate-900 to-slate-800 text-white">
         <div class="max-w-6xl mx-auto px-6 py-16 grid grid-cols-1 md:grid-cols-3 gap-8 items-center">
           <div class="md:col-span-2">
-            <div class="mb-6 text-sm text-yellow-300 uppercase tracking-wide">Powered by ABG Surdal Collier</div>
+            <div class="mb-6 text-sm text-yellow-300 uppercase tracking-wide">Powered by ABG Sundal Collier</div>
             <h1 class="text-4xl md:text-5xl font-extrabold leading-tight mb-4">Your Intelligent Edge in Equity Sales</h1>
             <p class="text-slate-200 max-w-xl mb-6">Real-time scraping, index analytics, and an AI that converts rebalances and earnings deviations into concise, actionable sales commentary for ABG traders and sales teams.</p>
             <div class="text-sm text-yellow-300">Use the top navigation to open product pages.</div>
@@ -501,7 +501,7 @@ app.get('/watchers', async (req, res) => {
         <div class="bg-white rounded-xl shadow p-6">
           <h1 class="text-3xl md:text-4xl font-bold mb-4">Watchers</h1>
           <p class="text-sm text-gray-600 mb-2">List of discovered watchers. Click a watcher to view details or trigger a run.</p>
-          <p class="text-sm text-gray-600 mb-4">Watchers run approximately every 24 hours (frequency depends on the specific scraper). Times shown are Europe/Copenhagen (CET/CEST depending on daylight saving). To be added to the mailing list for a specific scraper or to request scraping of a website or dataset, please contact Tobias via <a href="https://www.linkedin.com/in/tobias-gudbjerg-59b893249/" target="_blank" rel="noopener" class="text-blue-600">LinkedIn</a>.</p>
+          <p class="text-sm text-gray-600 mb-4">Watchers run approximately every 3 hours. Times shown are Europe/Copenhagen (CET/CEST depending on daylight saving). To be added to the mailing list for a specific scraper or to request scraping of a website or dataset, please contact Tobias via <a href="https://www.linkedin.com/in/tobias-gudbjerg-59b893249/" target="_blank" rel="noopener" class="text-blue-600">LinkedIn</a>.</p>
           <div class="grid md:grid-cols-2 gap-4">
             ${rows.map(r => `
               <div class="p-4 border rounded flex items-center justify-between gap-4">
