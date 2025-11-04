@@ -1,11 +1,12 @@
-# VA Report Watcher
+# Kaxcap Suite (formerly "VA Report Watcher")
 
-This Node.js app monitors two web pages for monthly reports:
+This repository now contains a small product suite of related services for monitoring, analyzing, and proposing changes to financial/healthcare data. The original watcher/scraper is still present, but the project scope has expanded to three products:
 
-1. [VA Hearing Aid Procurement Summary](https://www.va.gov/opal/nac/csas/index.asp)
-2. [eSundhed Obesity Medications Report](https://www.esundhed.dk/Emner/Laegemidler/Laegemidlermodovervaegt)
+1. Watchers (scrapers) — lightweight site-specific scrapers that detect and persist newly published reports (originally `va` and `eSundhed`).
+2. Index Rebalancer — pulls index constituent data (FactSet), computes rebalancing proposals, and stores proposals for review/execution.
+3. AI Analyst — ingests reports and proposals, generates summaries and embeddings, and answers natural-language queries over stored documents.
 
-It sends email alerts with the attached Excel reports whenever new reports are published.
+Notes: the original watcher functionality (VA / eSundhed) is preserved under `projects/analyst-scraper/watchers`. The new products live under `workers/` (rebalancer) and `services/ai-analyst/` (AI tooling).
 
 ---
 

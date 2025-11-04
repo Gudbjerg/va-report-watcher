@@ -32,7 +32,17 @@ async function computeProposal(indexId, opts = {}) {
 }
 
 async function persistProposal(record) {
-    const { data, error } = await supabase.from('index_proposals').insert([{ payload: record }]);
+    // Normalize top-level columns: index_id and status for efficient queries
+    const indexId = record.indexId || record.index_id || (record.payload && record.payload.indexId) || null;
+    const status = record.status || 'pending';
+
+    const insertRow = {
+        index_id: indexId,
+        payload: record,
+        status
+    };
+
+    const { data, error } = await supabase.from('index_proposals').insert([insertRow]);
     if (error) throw error;
     return data;
 }
