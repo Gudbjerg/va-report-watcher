@@ -218,6 +218,7 @@ function renderFooter() {
       <footer class="bg-white border-t mt-12">
         <div class="max-w-6xl mx-auto px-6 py-4 text-sm text-slate-600 flex items-center justify-between">
           <div>MarketBuddy — internal ABG tool</div>
+          <div class="text-xs text-slate-500">Not an official ABG Sundal Collier product — <a href="/legal" class="text-blue-600">legal</a></div>
           <div class="flex items-center gap-3">
             <a href="https://www.linkedin.com/in/tobias-gudbjerg-59b893249/" target="_blank" rel="noopener" class="text-slate-600 flex items-center gap-2">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" class="w-4 h-4" fill="currentColor" aria-hidden="true"><path d="M100.28 448H7.4V148.9h92.88zm-46.44-340a53.66 53.66 0 1 1 53.66-53.66 53.66 53.66 0 0 1-53.66 53.66zM447.9 448h-92.68V302.4c0-34.7-.7-79.4-48.4-79.4-48.4 0-55.8 37.8-55.8 76.8V448h-92.7V148.9h89V196h1.3c12.4-23.5 42.6-48.4 87.7-48.4 93.8 0 111.2 61.8 111.2 142.3V448z"/></svg>
@@ -604,6 +605,10 @@ app.get('/about', async (req, res) => {
           <div class="bg-white rounded-xl shadow p-6">
             <h1 class="text-2xl font-bold mb-4">About MarketBuddy</h1>
             <p class="text-sm text-gray-600 mb-4">MarketBuddy is an internal ABG tool that centralises real-time watchers, rebalancer proposals and quick AI analyst commentary. It's built to help ABG sales and trading teams spot and communicate index changes and earnings surprises faster.</p>
+            <div class="mb-4 p-4 border-l-4 border-yellow-400 bg-yellow-50">
+              <strong>Important:</strong>
+              <p class="text-sm text-gray-700 mt-2">This repository and the software it contains are internal tooling and experimental work. They are <strong>not</strong> an official product or offering of ABG Sundal Collier. For the full legal disclaimer, see <a href="/legal" class="text-blue-600">the legal page</a>.</p>
+            </div>
             <p class="text-sm text-gray-600 mb-4">Maintained by Tobias Gudbjerg. For access or questions, reach out to Tobias internally or via the LinkedIn profile linked below.</p>
             <div class="mt-4">
               <a href="${linkedin}" target="_blank" rel="noopener" class="inline-block bg-blue-600 text-white px-4 py-2 rounded">Contact (LinkedIn) →</a>
@@ -613,6 +618,30 @@ app.get('/about', async (req, res) => {
         </main>
       </body></html>
     `);
+});
+
+// Legal page: render LEGAL.md content simply for web reference
+app.get('/legal', async (req, res) => {
+  try {
+    const txt = fs.readFileSync(path.join(__dirname, 'LEGAL.md'), 'utf8');
+    // simple preformatted rendering so content is exact and visible
+    res.send(`
+      <html><head>${renderHead('Legal')}</head>
+        <body class="bg-gray-50 p-6">
+          ${renderHeader()}
+          <main class="max-w-6xl mx-auto p-6">
+            <div class="bg-white rounded-xl shadow p-6">
+              <h1 class="text-2xl font-bold mb-4">Legal disclaimer</h1>
+              <pre class="whitespace-pre-wrap text-sm text-slate-700 p-3 bg-gray-50 rounded">${txt.replace(/</g, '&lt;')}</pre>
+              <div class="mt-4"><a href="/" class="text-blue-600">← Back</a></div>
+            </div>
+          </main>
+        </body></html>
+    `);
+  } catch (e) {
+    console.error('[legal] failed to read LEGAL.md:', e && e.message ? e.message : e);
+    res.status(500).send('Legal page not available');
+  }
 });
 
 // API: list persisted rebalancer proposals
