@@ -185,6 +185,10 @@ CI behavior (summary): the workflow starts the app with `DISABLE_EMAIL=true`, pi
 
 MIT
 
+## Legal disclaimer
+
+This repository contains internal tooling and experimental code developed for use by ABG Sundal Collier and collaborators. It is provided for internal evaluation and development purposes only and is not an official product or offering of ABG Sundal Collier. See `LEGAL.md` for the full disclaimer.
+
 ---
 
 ## 💌 Credits
