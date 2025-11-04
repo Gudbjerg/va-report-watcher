@@ -503,7 +503,7 @@ app.get('/watchers', async (req, res) => {
           <h1 class="text-3xl md:text-4xl font-bold mb-4">Watchers</h1>
           <p class="text-sm text-gray-600 mb-2">List of discovered watchers. Click a watcher to view details or trigger a run.</p>
           <p class="text-sm text-gray-600 mb-4">Watchers run approximately every 3 hours. Times shown are Europe/Copenhagen (CET/CEST depending on daylight saving). To be added to the mailing list for a specific scraper or to request scraping of a website or dataset, please contact Tobias via <a href="https://www.linkedin.com/in/tobias-gudbjerg-59b893249/" target="_blank" rel="noopener" class="text-blue-600">LinkedIn</a>.</p>
-          <div class="grid md:grid-cols-2 gap-4">
+          <div class="grid grid-cols-1 gap-4">
             ${rows.map(r => `
               <div class="p-4 border rounded flex items-center justify-between gap-4">
                 <div class="flex items-center gap-4">
