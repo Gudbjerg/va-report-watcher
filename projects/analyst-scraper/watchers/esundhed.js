@@ -134,7 +134,7 @@ const getFileBuffer = url => {
 
 const getHash = buffer => crypto.createHash('sha256').update(buffer).digest('hex');
 
-async function notifyNewEsundhedReport(url, buffer) {
+async function notifyNewEsundhedReport(url, buffer, filename) {
     try {
         // Respect global disable flag to prevent accidental sends
         if (process.env.DISABLE_EMAIL === 'true') {
@@ -143,14 +143,15 @@ async function notifyNewEsundhedReport(url, buffer) {
         }
 
         // Use sendEmail adapter. ESUNDHED_TO_EMAIL overrides TO_EMAIL -> EMAIL_USER.
+        const attachName = filename || 'sundhedsdatabank-latest.xlsx';
         await sendMail({
             to: process.env.ESUNDHED_TO_EMAIL || process.env.TO_EMAIL || process.env.EMAIL_USER,
             from: process.env.ESUNDHED_FROM_EMAIL || process.env.FROM_EMAIL || process.env.EMAIL_USER,
             subject: 'New Sundhedsdatabank report available',
             text: `A new Sundhedsdatabank report is available: ${url}`,
-            attachments: [{ filename: fileName || 'sundhedsdatabank-latest.xlsx', content: buffer }]
+            attachments: [{ filename: attachName, content: buffer }]
         });
-        console.log(`[📧] Email sent for new Sundhedsdatabank report: ${url}`);
+        console.log(`[📧] Email sent for new Sundhedsdatabank report: ${url} (attachment: ${attachName})`);
     } catch (err) {
         console.error('[email] notifyNewEsundhedReport failed (logged, not thrown):', err && err.message ? err.message : err);
     }
@@ -194,7 +195,7 @@ async function checkEsundhedUpdate() {
             if (!saved) {
                 console.warn('[⚠️] Failed to save record to Supabase; skipping email notification.');
             } else {
-                await retry(() => notifyNewEsundhedReport(fullUrl, buffer));
+                await retry(() => notifyNewEsundhedReport(fullUrl, buffer, fileName));
             }
         } else {
             console.log(`[🟰] Report already recorded. Skipping. Same hash: ${lastRecord.hash}`);
