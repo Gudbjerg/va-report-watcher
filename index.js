@@ -713,6 +713,64 @@ app.get('/api/rebalancer/proposals', async (_, res) => {
   }
 });
 
+app.post('/api/rebalancer/proposals', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    // minimal validation
+    if (!payload.indexId || !payload.proposed) return res.status(400).json({ error: 'indexId and proposed array required' });
+    const row = {
+      index_id: payload.indexId,
+      name: payload.name || null,
+      status: payload.status || 'proposed',
+      payload: payload
+    };
+    const { data, error } = await supabase.from('index_proposals').insert([row]).select();
+    if (error) return res.status(500).json({ error: error.message || error });
+    const created = data && data[0];
+
+    // Try to persist proposal constituents (if provided in payload.proposed)
+    try {
+      const proposalId = created && created.id;
+      if (proposalId && Array.isArray(payload.proposed) && payload.proposed.length > 0) {
+        const rows = payload.proposed.map(p => ({
+          proposal_id: proposalId,
+          index_id: payload.indexId,
+          ticker: String(p.ticker || p.symbol || '').toUpperCase(),
+          name: p.name || p.ticker || p.symbol || '',
+          price: typeof p.price !== 'undefined' ? Number(p.price) : null,
+          shares: typeof p.shares !== 'undefined' ? p.shares : null,
+          shares_capped: typeof p.shares_capped !== 'undefined' ? p.shares_capped : null,
+          mcap: typeof p.mcap !== 'undefined' ? Number(p.mcap) : null,
+          mcap_capped: typeof p.mcap_capped !== 'undefined' ? Number(p.mcap_capped) : null,
+          avg_30d_volume: typeof p.avg_30d_volume !== 'undefined' ? Number(p.avg_30d_volume) : null,
+          weight: typeof p.newWeight !== 'undefined' ? Number(p.newWeight) : (typeof p.weight !== 'undefined' ? Number(p.weight) : null),
+          weight_capped: typeof p.weight_capped !== 'undefined' ? Number(p.weight_capped) : null
+        }));
+
+        const { data: pcData, error: pcError } = await supabase.from('proposal_constituents').insert(rows).select();
+        if (pcError) {
+          // Roll back created proposal to avoid half-created state
+          try {
+            await supabase.from('index_proposals').delete().eq('id', proposalId);
+          } catch (delErr) {
+            console.error('[api] failed to rollback proposal after constituents insert error:', delErr && delErr.message ? delErr.message : delErr);
+          }
+          console.error('[api] insert proposal_constituents failed:', pcError && pcError.message ? pcError.message : pcError);
+          return res.status(500).json({ error: pcError.message || pcError });
+        }
+      }
+    } catch (innerErr) {
+      console.error('[api] persist constituents failed:', innerErr && innerErr.message ? innerErr.message : innerErr);
+      return res.status(500).json({ error: String(innerErr) });
+    }
+
+    return res.status(201).json({ proposal: created });
+  } catch (e) {
+    console.error('[api] post rebalancer proposal failed:', e && e.message ? e.message : e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
 // Simple memes store (file-backed). This keeps things lightweight and works without DB setup.
 const MEME_STORE = path.join(__dirname, 'data', 'memes.json');
 function readMemes() {
