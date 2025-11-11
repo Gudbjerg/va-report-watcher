@@ -1,0 +1,234 @@
+// watchers/esundhed.js (moved under projects/analyst-scraper)
+require('dotenv').config();
+const fetch = require('node-fetch');
+const cheerio = require('cheerio');
+const https = require('https');
+const path = require('path');
+const crypto = require('crypto');
+const { createClient } = require('@supabase/supabase-js');
+
+const BASE_URL = 'https://sundhedsdatabank.dk/medicin/medicintyper';
+const FILE_TABLE = 'esundhed_report';
+
+// Prefer service role key for backend operations
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
+);
+
+const { sendMail } = require('../../../lib/sendEmail');
+
+const retry = async (fn, attempts = 3) => {
+    for (let i = 0; i < attempts; i++) {
+        try {
+            return await fn();
+        } catch (err) {
+            if (i === attempts - 1) throw err;
+        }
+    }
+};
+
+async function fetchLatestEsundhedReport() {
+    const res = await fetch(BASE_URL);
+    const html = await res.text();
+    const $ = cheerio.load(html);
+
+    console.log('[🧾] Loaded Sundhedsdatabank page');
+
+    // Find all anchors with an href and filter for .xlsx links (case-insensitive)
+    const anchors = $('a[href]').toArray();
+    const xlsxCandidates = anchors.filter(a => {
+        const href = ($(a).attr('href') || '').toLowerCase();
+        return href.endsWith('.xlsx');
+    });
+
+    if (!xlsxCandidates || xlsxCandidates.length === 0) {
+        console.log('[❌] No .xlsx links found on page');
+        return null;
+    }
+
+    // Prefer a candidate where the link text contains our target phrase
+    const targetPhrase = 'vægttabs- og diabetesmedicin';
+    let chosen = null;
+    for (const a of xlsxCandidates) {
+        const txt = ($(a).text() || '').toLowerCase();
+        if (txt.includes(targetPhrase)) {
+            chosen = a;
+            break;
+        }
+    }
+
+    // Fallback: try title attribute match or pick the first candidate
+    if (!chosen) {
+        chosen = xlsxCandidates.find(a => { const t = ($(a).attr('title') || '').toLowerCase(); return t.includes('excel') || t.includes('xlsx'); }) || xlsxCandidates[0];
+    }
+
+    const relativeHref = $(chosen).attr('href');
+    if (!relativeHref) {
+        console.log('[❌] Selected candidate had no href — candidates:', xlsxCandidates.map(a => $(a).attr('href')));
+        return null;
+    }
+
+    const fullUrl = new URL(relativeHref, BASE_URL).href;
+    // prefer decoded pathname basename to get a human-friendly filename
+    const fileName = decodeURIComponent(path.basename(new URL(fullUrl).pathname));
+
+    console.log(`[📁] Found file: ${fileName}`);
+    console.log(`[🔗] Full URL: ${fullUrl}`);
+
+    // If there are other candidates, log them for debugging
+    if (xlsxCandidates.length > 1) {
+        console.log('[ℹ] Other XLSX candidates:', xlsxCandidates.map(a => $(a).attr('href')));
+    }
+
+    return { fileName, fullUrl };
+}
+
+async function getLastEsundhedRecord() {
+    const { data, error } = await supabase
+        .from(FILE_TABLE)
+        .select('filename, hash, updated_at')
+        .eq('id', 1)
+        .maybeSingle();
+
+    if (error) {
+        console.error('[❌] Failed to fetch last record:', error);
+        return null;
+    }
+
+    return data;
+}
+
+async function saveEsundhedRecord(filename, hash) {
+    console.log('[📥] Upserting to Supabase:', { filename, hash });
+    const { data, error, status } = await supabase
+        .from(FILE_TABLE)
+        .upsert({
+            id: 1,
+            filename,
+            hash,
+            updated_at: new Date().toISOString()
+        })
+        .select();
+
+    console.log('[supabase] upsert result', { status, error, data });
+    if (error) {
+        console.error('[❌] Supabase upsert error:', error);
+        return false;
+    }
+
+    console.log('[✅] Supabase record saved:', data);
+    return true;
+}
+
+const getFileBuffer = url => {
+    return new Promise((resolve, reject) => {
+        https.get(url, res => {
+            if (res.statusCode !== 200) return reject(new Error(`Failed to fetch: ${res.statusCode}`));
+            const data = [];
+            res.on('data', chunk => data.push(chunk));
+            res.on('end', () => resolve(Buffer.concat(data)));
+        }).on('error', reject);
+    });
+};
+
+const getHash = buffer => crypto.createHash('sha256').update(buffer).digest('hex');
+
+async function notifyNewEsundhedReport(url, buffer, filename) {
+    try {
+        // Respect global disable flag to prevent accidental sends
+        if (process.env.DISABLE_EMAIL === 'true') {
+            console.log('[email] DISABLE_EMAIL=true — skipping eSundhed email', { url });
+            return;
+        }
+
+        // Use sendEmail adapter. ESUNDHED_TO_EMAIL overrides TO_EMAIL -> EMAIL_USER.
+        const attachName = filename || 'sundhedsdatabank-latest.xlsx';
+        await sendMail({
+            to: process.env.ESUNDHED_TO_EMAIL || process.env.TO_EMAIL || process.env.EMAIL_USER,
+            from: process.env.ESUNDHED_FROM_EMAIL || process.env.FROM_EMAIL || process.env.EMAIL_USER,
+            subject: 'New Sundhedsdatabank report available',
+            text: `A new Sundhedsdatabank report is available: ${url}`,
+            attachments: [{ filename: attachName, content: buffer }]
+        });
+        console.log(`[📧] Email sent for new Sundhedsdatabank report: ${url} (attachment: ${attachName})`);
+    } catch (err) {
+        console.error('[email] notifyNewEsundhedReport failed (logged, not thrown):', err && err.message ? err.message : err);
+    }
+}
+
+async function checkEsundhedUpdate() {
+    try {
+        console.log('[🔍] Checking eSundhed for updated report...');
+        const result = await fetchLatestEsundhedReport();
+        if (!result) {
+            console.log('[❌] Could not locate download link.');
+            return { filename: null };
+        }
+
+        const { fileName, fullUrl } = result;
+        // Basic HEAD check to validate the resource before downloading
+        try {
+            const head = await fetch(fullUrl, { method: 'HEAD' });
+            if (!head.ok) {
+                console.log('[warn] HEAD request returned', head.status, '- attempting full download anyway');
+            } else {
+                const ct = (head.headers.get('content-type') || '').toLowerCase();
+                if (!(ct.includes('sheet') || ct.includes('excel') || ct.includes('spreadsheet') || ct.includes('application/vnd.openxmlformats-officedocument'))) {
+                    console.log('[warn] HEAD content-type looks unusual:', ct);
+                }
+            }
+        } catch (e) {
+            console.log('[warn] HEAD check failed, proceeding to download anyway:', e && e.message ? e.message : e);
+        }
+
+        const buffer = await getFileBuffer(fullUrl);
+        const hash = getHash(buffer);
+
+        console.log(`[🧮] Computed hash: ${hash}`);
+
+        if (!hash || hash.length !== 64) {
+            console.error('[‼️] Invalid hash generated. Skipping save and notification.');
+            return { filename: null };
+        }
+
+        const lastRecord = await getLastEsundhedRecord();
+        const isNew = !lastRecord || hash !== lastRecord.hash;
+
+        console.log('[🧪 Final Check]', {
+            fileName,
+            hash,
+            lastHash: lastRecord?.hash,
+            isNew
+        });
+
+        if (isNew) {
+            console.log(`[✅] New report detected or updated contents: ${fileName}`);
+
+            // Persist to DB first, then notify. If save fails, log and skip notification.
+            const saved = await saveEsundhedRecord(fileName, hash);
+            if (!saved) {
+                console.warn('[⚠️] Failed to save record to Supabase; skipping email notification.');
+            } else {
+                await retry(() => notifyNewEsundhedReport(fullUrl, buffer, fileName));
+            }
+        } else {
+            console.log(`[🟰] Report already recorded. Skipping. Same hash: ${lastRecord.hash}`);
+        }
+
+        return {
+            filename: fileName,
+            hash,
+            updated: isNew,
+            timestamp: new Date().toISOString()
+        };
+    } catch (err) {
+        console.log(`[🔥] Error checking eSundhed update: ${err}`);
+        return { filename: null };
+    }
+}
+
+module.exports = {
+    checkEsundhedUpdate,
+    fetchLatestEsundhedReport
+};

@@ -83,15 +83,21 @@ function discoverWatchers() {
   }
 
   try {
-    const esPath = path.join(__dirname, 'projects', 'analyst-scraper', 'watchers', 'esundhed.js');
-    if (fs.existsSync(esPath)) {
-      const mod = require(esPath);
-      checkEsundhedFn = mod.checkEsundhedUpdate || mod;
-      console.log('[loader] loaded Sundhedsdatabank watcher from', esPath);
-      discoveredWatchers.push({ key: 'esundhed', name: 'Sundhedsdatabank', path: esPath, route: '/scrape/esundhed' });
+    // Try a couple of reasonable filenames in the project watcher folder so renames are smooth
+    const watcherDir = path.join(__dirname, 'projects', 'analyst-scraper', 'watchers');
+    const candidates = ['sundhedsdatabank.js', 'esundhed.js'];
+    for (const fn of candidates) {
+      const p = path.join(watcherDir, fn);
+      if (fs.existsSync(p)) {
+        const mod = require(p);
+        checkEsundhedFn = mod.checkEsundhedUpdate || mod;
+        console.log('[loader] loaded Sundhedsdatabank watcher from', p);
+        discoveredWatchers.push({ key: 'esundhed', name: 'Sundhedsdatabank', path: p, route: '/scrape/esundhed' });
+        break;
+      }
     }
   } catch (e) {
-    console.warn('[loader] could not load project eSundhed watcher:', e && e.message ? e.message : e);
+    console.warn('[loader] could not load project Sundhedsdatabank watcher:', e && e.message ? e.message : e);
   }
 
   // Fallback to legacy shims if project files missing
@@ -171,8 +177,12 @@ async function updateEsundhed() {
     lastEsundhed = {
       time: new Date(),
       filename: result.filename,
-      updated_at: updatedAt
+      updated_at: updatedAt,
+      lastRun: { status: result.updated ? 'new' : 'no-change', message: result.updated ? 'New report saved' : 'No-change', time: new Date() }
     };
+  } else {
+    // No file found or error — record a last run outcome for visibility
+    lastEsundhed = Object.assign(lastEsundhed || {}, { time: new Date(), lastRun: { status: 'no-link', message: 'No XLSX link found or error', time: new Date() } });
   }
 }
 
@@ -512,6 +522,8 @@ app.get('/watchers', async (req, res) => {
       }
     } catch (e) { }
 
+    const last_run_message = (w.key === 'va') ? (lastVA.lastRun ? lastVA.lastRun.message : '') : (lastEsundhed.lastRun ? lastEsundhed.lastRun.message : '');
+
     return {
       key: w.key,
       name: w.name,
@@ -523,6 +535,7 @@ app.get('/watchers', async (req, res) => {
       last_check_relative: formatRelative(last_iso),
       last_reported: toDK(reported_iso),
       last_reported_relative: formatRelative(reported_iso),
+      last_run_message,
       status,
       statusClass
     };
@@ -552,6 +565,7 @@ app.get('/watchers', async (req, res) => {
                       <div>Last reported: <span class="text-sm font-semibold text-slate-800">${r.last_reported_relative || r.last_reported}</span>
                         <span class="text-xs text-slate-400 ml-2" data-iso="${r.reported_iso || ''}">${r.last_reported}</span>
                       </div>
+                      <div class="text-xs text-slate-400 mt-1">Last run: <span class="text-slate-700 font-medium">${r.last_run_message || '—'}</span></div>
                     </div>
                   </div>
                 </div>
