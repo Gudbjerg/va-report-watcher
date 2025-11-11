@@ -716,8 +716,34 @@ app.get('/api/rebalancer/proposals', async (_, res) => {
 app.post('/api/rebalancer/proposals', async (req, res) => {
   try {
     const payload = req.body || {};
+
+    // Simple API key guard for now (environment variable REBALANCER_API_KEY)
+    const apiKey = process.env.REBALANCER_API_KEY || '';
+    if (apiKey) {
+      const provided = req.get('x-rebalancer-key') || req.query.key || '';
+      if (!provided || provided !== apiKey) return res.status(401).json({ error: 'missing or invalid API key' });
+    }
+
     // minimal validation
     if (!payload.indexId || !payload.proposed) return res.status(400).json({ error: 'indexId and proposed array required' });
+
+    // Prefer atomic insert via Postgres RPC if available
+    try {
+      if (supabase && typeof supabase.rpc === 'function') {
+        const { data, error } = await supabase.rpc('insert_proposal_with_constituents', { payload: payload });
+        if (error) {
+          console.error('[api] rpc insert failed:', error);
+          // fall through to legacy behavior
+        } else {
+          return res.status(201).json({ proposal: data });
+        }
+      }
+    } catch (rpcErr) {
+      console.error('[api] rpc call failed:', rpcErr && rpcErr.message ? rpcErr.message : rpcErr);
+      // continue to fallback
+    }
+
+    // Fallback: previous behavior (insert proposal then constituents)
     const row = {
       index_id: payload.indexId,
       name: payload.name || null,
@@ -728,23 +754,22 @@ app.post('/api/rebalancer/proposals', async (req, res) => {
     if (error) return res.status(500).json({ error: error.message || error });
     const created = data && data[0];
 
-    // Try to persist proposal constituents (if provided in payload.proposed)
+    // Persist proposal constituents (if provided in payload.proposed)
     try {
       const proposalId = created && created.id;
       if (proposalId && Array.isArray(payload.proposed) && payload.proposed.length > 0) {
         const rows = payload.proposed.map(p => ({
           proposal_id: proposalId,
           index_id: payload.indexId,
+          issuer: p.issuer || p.ticker || null,
           ticker: String(p.ticker || p.symbol || '').toUpperCase(),
           name: p.name || p.ticker || p.symbol || '',
           price: typeof p.price !== 'undefined' ? Number(p.price) : null,
           shares: typeof p.shares !== 'undefined' ? p.shares : null,
-          shares_capped: typeof p.shares_capped !== 'undefined' ? p.shares_capped : null,
           mcap: typeof p.mcap !== 'undefined' ? Number(p.mcap) : null,
-          mcap_capped: typeof p.mcap_capped !== 'undefined' ? Number(p.mcap_capped) : null,
-          avg_30d_volume: typeof p.avg_30d_volume !== 'undefined' ? Number(p.avg_30d_volume) : null,
-          weight: typeof p.newWeight !== 'undefined' ? Number(p.newWeight) : (typeof p.weight !== 'undefined' ? Number(p.weight) : null),
-          weight_capped: typeof p.weight_capped !== 'undefined' ? Number(p.weight_capped) : null
+          old_weight: typeof p.oldWeight !== 'undefined' ? Number(p.oldWeight) : (typeof p.old_weight !== 'undefined' ? Number(p.old_weight) : null),
+          new_weight: typeof p.newWeight !== 'undefined' ? Number(p.newWeight) : (typeof p.new_weight !== 'undefined' ? Number(p.new_weight) : null),
+          created_at: new Date()
         }));
 
         const { data: pcData, error: pcError } = await supabase.from('proposal_constituents').insert(rows).select();
