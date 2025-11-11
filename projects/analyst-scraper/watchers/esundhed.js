@@ -33,23 +33,53 @@ async function fetchLatestEsundhedReport() {
     const html = await res.text();
     const $ = cheerio.load(html);
 
-    console.log('[🧾] Loaded new sundhedsdatabank page');
+    console.log('[🧾] Loaded Sundhedsdatabank page');
 
-    const linkTag = $('a.icon[href$=".XLSX"]')
-        .filter((_, el) => $(el).text().trim().includes('Vægttabs- og diabetesmedicin'))
-        .first();
+    // Find all anchors with an href and filter for .xlsx links (case-insensitive)
+    const anchors = $('a[href]').toArray();
+    const xlsxCandidates = anchors.filter(a => {
+        const href = ($(a).attr('href') || '').toLowerCase();
+        return href.endsWith('.xlsx');
+    });
 
-    const relativeHref = linkTag.attr('href');
+    if (!xlsxCandidates || xlsxCandidates.length === 0) {
+        console.log('[❌] No .xlsx links found on page');
+        return null;
+    }
+
+    // Prefer a candidate where the link text contains our target phrase
+    const targetPhrase = 'vægttabs- og diabetesmedicin';
+    let chosen = null;
+    for (const a of xlsxCandidates) {
+        const txt = ($(a).text() || '').toLowerCase();
+        if (txt.includes(targetPhrase)) {
+            chosen = a;
+            break;
+        }
+    }
+
+    // Fallback: try title attribute match or pick the first candidate
+    if (!chosen) {
+        chosen = xlsxCandidates.find(a => { const t = ($(a).attr('title') || '').toLowerCase(); return t.includes('excel') || t.includes('xlsx'); }) || xlsxCandidates[0];
+    }
+
+    const relativeHref = $(chosen).attr('href');
     if (!relativeHref) {
-        console.log('[❌] No XLSX link found with expected content');
+        console.log('[❌] Selected candidate had no href — candidates:', xlsxCandidates.map(a => $(a).attr('href')));
         return null;
     }
 
     const fullUrl = new URL(relativeHref, BASE_URL).href;
-    const fileName = decodeURIComponent(path.basename(relativeHref));
+    // prefer decoded pathname basename to get a human-friendly filename
+    const fileName = decodeURIComponent(path.basename(new URL(fullUrl).pathname));
 
     console.log(`[📁] Found file: ${fileName}`);
     console.log(`[🔗] Full URL: ${fullUrl}`);
+
+    // If there are other candidates, log them for debugging
+    if (xlsxCandidates.length > 1) {
+        console.log('[ℹ] Other XLSX candidates:', xlsxCandidates.map(a => $(a).attr('href')));
+    }
 
     return { fileName, fullUrl };
 }
@@ -116,11 +146,11 @@ async function notifyNewEsundhedReport(url, buffer) {
         await sendMail({
             to: process.env.ESUNDHED_TO_EMAIL || process.env.TO_EMAIL || process.env.EMAIL_USER,
             from: process.env.ESUNDHED_FROM_EMAIL || process.env.FROM_EMAIL || process.env.EMAIL_USER,
-            subject: 'New eSundhed Report Available',
-            text: `A new report is available: ${url}`,
-            attachments: [{ filename: 'esundhed-latest.xlsx', content: buffer }]
+            subject: 'New Sundhedsdatabank report available',
+            text: `A new Sundhedsdatabank report is available: ${url}`,
+            attachments: [{ filename: fileName || 'sundhedsdatabank-latest.xlsx', content: buffer }]
         });
-        console.log(`[📧] Email sent for new eSundhed report: ${url}`);
+        console.log(`[📧] Email sent for new Sundhedsdatabank report: ${url}`);
     } catch (err) {
         console.error('[email] notifyNewEsundhedReport failed (logged, not thrown):', err && err.message ? err.message : err);
     }

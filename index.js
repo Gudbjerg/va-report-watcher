@@ -87,8 +87,8 @@ function discoverWatchers() {
     if (fs.existsSync(esPath)) {
       const mod = require(esPath);
       checkEsundhedFn = mod.checkEsundhedUpdate || mod;
-      console.log('[loader] loaded eSundhed watcher from', esPath);
-      discoveredWatchers.push({ key: 'esundhed', name: 'eSundhed', path: esPath, route: '/scrape/esundhed' });
+      console.log('[loader] loaded Sundhedsdatabank watcher from', esPath);
+      discoveredWatchers.push({ key: 'esundhed', name: 'Sundhedsdatabank', path: esPath, route: '/scrape/esundhed' });
     }
   } catch (e) {
     console.warn('[loader] could not load project eSundhed watcher:', e && e.message ? e.message : e);
@@ -111,7 +111,7 @@ function discoverWatchers() {
       const legacy = require('./watchers/esundhed');
       checkEsundhedFn = legacy.checkEsundhedUpdate || legacy;
       console.log('[loader] falling back to ./watchers/esundhed');
-      discoveredWatchers.push({ key: 'esundhed', name: 'eSundhed (legacy)', path: path.join(__dirname, 'watchers', 'esundhed.js'), route: '/scrape/esundhed' });
+      discoveredWatchers.push({ key: 'esundhed', name: 'Sundhedsdatabank (legacy)', path: path.join(__dirname, 'watchers', 'esundhed.js'), route: '/scrape/esundhed' });
     } catch (e) {
       console.warn('[loader] no eSundhed watcher available:', e && e.message ? e.message : e);
     }

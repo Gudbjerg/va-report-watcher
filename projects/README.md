@@ -6,12 +6,12 @@ Watcher contract (minimal):
 
 - Export a function that runs a single check and returns an object describing what it found.
 - Recommended function name: `runWatcher()` or export the function as the module default.
-- For eSundhed-style watchers you may export named helpers like `fetchLatestEsundhedReport()` plus a public `checkEsundhedUpdate()` for the runtime.
+- For Sundhedsdatabank-style watchers you may export named helpers like `fetchLatestEsundhedReport()` plus a public `checkEsundhedUpdate()` for the runtime.
 
 Return shape (recommended):
 
 - For VA watcher: `{ month: 'YYYY-MM' }` when there is a result, else `{}`.
-- For eSundhed watcher: `{ filename: '...', hash: '...', url: '...' }` when a file was found, else `{}`.
+- For Sundhedsdatabank watcher: `{ filename: '...', hash: '...', url: '...' }` when a file was found, else `{}`.
 
 Examples and best-practices
 
@@ -37,7 +37,7 @@ Notes
 
 This folder lists the three top-level projects the site will present:
 
-- Analyst Scraper (VA & eSundhed watchers)
+- Analyst Scraper (VA & Sundhedsdatabank watchers)
 - AI Analyst (analysis and summarization pipeline)
 - KAXCAP Index (index tracking and rebalancer)
 
