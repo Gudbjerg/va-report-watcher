@@ -65,32 +65,38 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
 
     insert_resp = _do_insert(payload)
     if not insert_resp.ok:
-        txt = insert_resp.text.lower()
-        # Generic column-not-exist fallback: trim to known columns
-        if "column" in txt and "does not exist" in txt:
-            allowed = {"index_id", "ticker", "name", "price", "shares", "mcap",
-                       "weight", "capped_weight", "avg_daily_volume", "as_of", "region", "issuer"}
-            trimmed = [{k: v for k, v in row.items() if k in allowed}
-                       for row in payload]
-            print("Insert failed due to unknown columns. Retrying with trimmed payload…")
-            insert_resp2 = _do_insert(trimmed)
+        # Log full error body to aid debugging in Render
+        print("Supabase insert failed:", insert_resp.status_code)
+        try:
+            print("Error body:", insert_resp.text)
+        except Exception:
+            pass
+
+        # Retry with a conservative trimmed schema of known columns
+        allowed = {
+            "index_id",
+            "ticker",
+            "name",
+            "price",
+            "shares",
+            "mcap",
+            "weight",
+            "capped_weight",
+            "avg_daily_volume",
+            "as_of",
+        }
+        trimmed = [{k: v for k, v in row.items() if k in allowed}
+                   for row in payload]
+        print("Retrying insert with trimmed payload (known columns only)…")
+        insert_resp2 = _do_insert(trimmed)
+        if not insert_resp2.ok:
+            print("Trimmed insert still failed:", insert_resp2.status_code)
+            try:
+                print("Error body:", insert_resp2.text)
+            except Exception:
+                pass
             insert_resp2.raise_for_status()
-            print(
-                f"Inserted {len(trimmed)} rows into index_constituents (trimmed schema).")
-            return
-        # Legacy special-case for issuer/region if error messaging differs
-        has_col_err = ("column" in txt and ("issuer" in txt or "region" in txt)) or (
-            "unknown" in txt and ("issuer" in txt or "region" in txt))
-        if has_col_err:
-            trimmed = [{k: v for k, v in row.items() if k not in (
-                "issuer", "region")} for row in payload]
-            print(
-                "Insert failed due to schema columns (issuer/region). Retrying without those columns…")
-            insert_resp2 = _do_insert(trimmed)
-            insert_resp2.raise_for_status()
-            print(
-                f"Inserted {len(trimmed)} rows into index_constituents (without issuer/region).")
-            return
-        insert_resp.raise_for_status()
+        print(
+            f"Inserted {len(trimmed)} rows into index_constituents (trimmed schema).")
     else:
         print(f"Inserted {len(payload)} rows into index_constituents.")
