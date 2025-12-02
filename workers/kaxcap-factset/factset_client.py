@@ -39,7 +39,7 @@ def _get_client():
     return formula.ApiClient(config)
 
 
-# --- FETCH RAW KAXCAP DATA -------------------------------------------------
+# --- FETCH RAW index DATA -------------------------------------------------
 
 def _universe_expr(region: str) -> str:
     r = (region or 'CPH').upper()
@@ -54,7 +54,7 @@ def _universe_expr(region: str) -> str:
         return "(FG_CONSTITUENTS(180553,0,CLOSE))=1"  # Helsinki All-Share
     if r == 'STO':
         # Use ID or symbol; allow override via env
-        return "(FG_CONSTITUENTS(OMXSALLS,0,CLOSE))=1" # Stockholm All-Share
+        return "(FG_CONSTITUENTS(OMXSALLS,0,CLOSE))=1"  # Stockholm All-Share
     # Fallback to Copenhagen
     return "(FG_CONSTITUENTS(187183,0,CLOSE))=1"
 
@@ -104,7 +104,7 @@ def fetch_kaxcap_raw(region: str = 'CPH') -> pd.DataFrame:
     # Try common output column keys; adjust if your API returns different names
     rename_map = {
         "fsym_ticker_exchange_0_id_": "ticker",
-        "fg_company_name": "issuer",
+        "fg_company_name": "name",
         "fg_price_now_": "price",
         # region-specific currency in name; we match by prefix
     }
@@ -118,6 +118,9 @@ def fetch_kaxcap_raw(region: str = 'CPH') -> pd.DataFrame:
     if vol_col:
         rename_map[vol_col] = 'avg_30d_volume'
     df = df.rename(columns=rename_map)
+    # Ensure issuer exists; mirror from name if missing
+    if 'issuer' not in df.columns:
+        df['issuer'] = df['name'] if 'name' in df.columns else None
 
     # Compute market cap when possible (price * shares)
     if 'price' in df.columns and 'shares' in df.columns:
@@ -130,8 +133,12 @@ def fetch_kaxcap_raw(region: str = 'CPH') -> pd.DataFrame:
     # Inject region
     df['region'] = (region or 'CPH').upper()
 
-    cols = ['ticker', 'issuer', 'price', 'shares',
-            'avg_30d_volume', 'mcap', 'region']
+    # Provide both volume keys for downstream compatibility
+    if 'avg_30d_volume' in df.columns and 'avg_vol_30d' not in df.columns:
+        df['avg_vol_30d'] = df['avg_30d_volume']
+
+    cols = ['ticker', 'issuer', 'name', 'price',
+            'shares', 'avg_30d_volume', 'mcap', 'region']
     for c in cols:
         if c not in df.columns:
             df[c] = None

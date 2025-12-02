@@ -1455,13 +1455,42 @@ app.listen(PORT, () => {
   console.log(`🌐 Server running on port ${PORT}`);
   updateVA();
   updateEsundhed();
+  // Run FactSet worker batch once on startup to populate tables
+  (async () => {
+    try {
+      const pythonCmd = process.env.PYTHON || 'python3';
+      const scriptPath = path.join(__dirname, 'workers', 'kaxcap-factset', 'main.py');
+      const runs = [
+        { region: 'CPH', indexId: process.env.CPH_INDEX_ID || 'KAXCAP' },
+        { region: 'HEL', indexId: process.env.HEL_INDEX_ID || 'HELXCAP' },
+        { region: 'STO', indexId: process.env.STO_INDEX_ID || 'OMXSALLS' }
+      ];
+      for (const r of runs) {
+        await new Promise((resolve) => {
+          execFile(pythonCmd, [scriptPath, '--region', r.region, '--index-id', r.indexId], { env: process.env }, (error, stdout, stderr) => {
+            if (error) {
+              console.error('[startup] FactSet run error', r, error);
+              writeSchedulerLog(`startup FactSet error region=${r.region} index=${r.indexId}: ${error && error.message ? error.message : String(error)}`);
+            } else {
+              console.log('[startup] FactSet run ok', r, stdout);
+              writeSchedulerLog(`startup FactSet ok region=${r.region} index=${r.indexId}`);
+            }
+            resolve();
+          });
+        });
+      }
+    } catch (e) {
+      console.error('[startup] FactSet batch failed', e && e.message ? e.message : e);
+      writeSchedulerLog(`startup FactSet batch failed: ${e && e.message ? e.message : String(e)}`);
+    }
+  })();
 });
 
 // Schedule watchers to run periodically using node-cron if available.
 try {
   const cron = require('node-cron');
-  // Run every 3 hours (minute 0) -> 8x/day. Use Europe/Copenhagen timezone.
-  cron.schedule('0 */3 * * *', async () => {
+  // Run every 4 hours (minute 0) -> 6x/day. Use Europe/Copenhagen timezone.
+  cron.schedule('0 */4 * * *', async () => {
     const startTs = new Date();
     console.log('[scheduler] scheduled run starting', startTs.toISOString());
     writeSchedulerLog('scheduled run starting');
@@ -1488,11 +1517,39 @@ try {
       writeSchedulerLog(`eSundhed error: ${e && e.message ? e.message : String(e)}`);
     }
 
+    // Trigger FactSet worker for all markets (daily)
+    try {
+      const pythonCmd = process.env.PYTHON || 'python3';
+      const scriptPath = path.join(__dirname, 'workers', 'kaxcap-factset', 'main.py');
+      const runs = [
+        { region: 'CPH', indexId: process.env.CPH_INDEX_ID || 'KAXCAP' },
+        { region: 'HEL', indexId: process.env.HEL_INDEX_ID || 'HELXCAP' },
+        { region: 'STO', indexId: process.env.STO_INDEX_ID || 'OMXSALLS' }
+      ];
+      for (const r of runs) {
+        await new Promise((resolve) => {
+          execFile(pythonCmd, [scriptPath, '--region', r.region, '--index-id', r.indexId], { env: process.env }, (error, stdout, stderr) => {
+            if (error) {
+              console.error('[scheduler] FactSet run error', r, error);
+              writeSchedulerLog(`FactSet run error region=${r.region} index=${r.indexId}: ${error && error.message ? error.message : String(error)}`);
+            } else {
+              console.log('[scheduler] FactSet run ok', r, stdout);
+              writeSchedulerLog(`FactSet run ok region=${r.region} index=${r.indexId}`);
+            }
+            resolve();
+          });
+        });
+      }
+    } catch (e) {
+      console.error('[scheduler] FactSet batch failed', e && e.message ? e.message : e);
+      writeSchedulerLog(`FactSet batch failed: ${e && e.message ? e.message : String(e)}`);
+    }
+
     const endTs = new Date();
     console.log('[scheduler] scheduled run complete', endTs.toISOString());
     writeSchedulerLog(`scheduled run complete (duration_ms=${endTs - startTs})`);
   }, { timezone: 'Europe/Copenhagen' });
-  console.log('[scheduler] cron scheduled: every 3 hours (Europe/Copenhagen)');
+  console.log('[scheduler] cron scheduled: every 4 hours (Europe/Copenhagen)');
 } catch (e) {
   console.log('[scheduler] node-cron not available or failed to load — scheduled runs disabled');
 }

@@ -47,7 +47,12 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
 
     # 2) insert new rows with graceful fallback if optional columns don't exist
     insert_url = f"{SUPABASE_URL}/rest/v1/index_constituents"
-    payload = df_status.to_dict(orient="records")
+    # Map calculated columns to Supabase schema where needed
+    df = df_status.copy()
+    # Supabase column is avg_daily_volume; map from avg_vol_30d if present
+    if "avg_vol_30d" in df.columns and "avg_daily_volume" not in df.columns:
+        df["avg_daily_volume"] = df["avg_vol_30d"]
+    payload = df.to_dict(orient="records")
     insert_params = {"prefer": "resolution=merge-duplicates"}
 
     def _do_insert(rows):
@@ -61,6 +66,19 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
     insert_resp = _do_insert(payload)
     if not insert_resp.ok:
         txt = insert_resp.text.lower()
+        # Generic column-not-exist fallback: trim to known columns
+        if "column" in txt and "does not exist" in txt:
+            allowed = {"index_id", "ticker", "name", "price", "shares", "mcap",
+                       "weight", "capped_weight", "avg_daily_volume", "as_of", "region", "issuer"}
+            trimmed = [{k: v for k, v in row.items() if k in allowed}
+                       for row in payload]
+            print("Insert failed due to unknown columns. Retrying with trimmed payload…")
+            insert_resp2 = _do_insert(trimmed)
+            insert_resp2.raise_for_status()
+            print(
+                f"Inserted {len(trimmed)} rows into index_constituents (trimmed schema).")
+            return
+        # Legacy special-case for issuer/region if error messaging differs
         has_col_err = ("column" in txt and ("issuer" in txt or "region" in txt)) or (
             "unknown" in txt and ("issuer" in txt or "region" in txt))
         if has_col_err:

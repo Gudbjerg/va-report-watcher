@@ -19,11 +19,17 @@ def _params_for_region(region: str) -> Params:
 def _normalize_input(df: pd.DataFrame) -> pd.DataFrame:
     d = df.copy()
     d["ticker"] = d["ticker"].astype(str).str.upper()
-    d["name"] = d["name"].astype(str)
+    # if name missing, fall back to issuer
+    if "name" not in d.columns:
+        d["name"] = d.get("issuer", "").astype(str)
+    else:
+        d["name"] = d["name"].astype(str)
     d["price"] = pd.to_numeric(d["price"], errors="coerce").fillna(0.0)
     d["shares"] = pd.to_numeric(d["shares"], errors="coerce").fillna(0.0)
+    # handle both possible volume names
+    vol_source = "avg_vol_30d" if "avg_vol_30d" in d.columns else "avg_30d_volume"
     d["avg_vol_30d"] = pd.to_numeric(
-        d["avg_vol_30d"], errors="coerce").fillna(0.0)
+        d.get(vol_source, 0.0), errors="coerce").fillna(0.0)
     d["mcap"] = d["shares"] * d["price"]
     return d
 
