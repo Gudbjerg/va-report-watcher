@@ -61,13 +61,14 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
         "apikey": SUPABASE_SERVICE_KEY,
         "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "Content-Type": "application/json",
+        # Use header for merge-duplicates behavior (not a query param)
+        "Prefer": "resolution=merge-duplicates",
     }
 
     # Delete any existing snapshot for this date in the per-index table
     delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
     delete_params = {
         "as_of": f"eq.{as_of}",
-        "apikey": SUPABASE_SERVICE_KEY,  # extra safety: include apikey in URL params
     }
     delete_resp = requests.delete(
         delete_url, headers=headers, params=delete_params)
@@ -105,8 +106,8 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
         normalized_payload.append(r)
 
     insert_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
-    insert_params = {"prefer": "resolution=merge-duplicates",
-                     "apikey": SUPABASE_SERVICE_KEY}
+    # No query params needed; headers carry auth + Prefer resolution
+    insert_params = {}
 
     def _do_insert(rows):
         return requests.post(
