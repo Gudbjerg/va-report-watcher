@@ -8,6 +8,8 @@ if (process.env.DEBUG_SUPABASE === '1') {
   }
 }
 
+const { execFile } = require("child_process");
+
 // Minimal runtime setup: create Express app, expose assets, and provide safe
 // fallbacks for globals that other modules expect when running locally.
 const express = require('express');
@@ -31,39 +33,22 @@ function writeSchedulerLog(line) {
     console.error('[scheduler] writeSchedulerLog failed:', e && e.message ? e.message : e);
   }
 }
+// (removed stray client-side DOM injection)
+
+
+const { getLatestKaxcapStatus } = require('./projects/kaxcap-index/kaxcapStatus');
 
 // Safe defaults so the server can start even if optional services (Supabase,
 // scheduled watchers) are not configured in this environment.
 let lastVA = { time: null, month: null, updated_at: null };
 let lastEsundhed = { time: null, filename: null, updated_at: null };
 
-// Minimal supabase client stub that supports common chain calls used in this
-// file so pages degrade gracefully when no SUPABASE_* env is provided.
-function _stubQuery(result = { data: [], error: null }) {
-  const q = {
-    select: async () => result,
-    order() { return q; },
-    limit() { return q; },
-    maybeSingle: async () => ({ data: null, error: null })
-  };
-  return q;
-}
-let supabase;
-try {
-  const { createClient } = require('@supabase/supabase-js');
-  const url = (process.env.SUPABASE_URL || '').trim();
-  const key = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || '').trim();
-  if (url && key) {
-    supabase = createClient(url, key);
-  } else {
-    supabase = { from: () => _stubQuery() };
-  }
-} catch (e) {
-  supabase = { from: () => _stubQuery() };
-}
+// Use shared Supabase client (with stub fallback inside the module)
+const supabase = require('./lib/supabaseClient');
 
 // Discovered runtime functions (set by discoverWatchers)
 let checkVAFn = null;
+// (removed stray client-side DOM injection)
 let checkEsundhedFn = null;
 // Lightweight registry of discovered watchers for the dashboard
 let discoveredWatchers = [];
@@ -103,23 +88,23 @@ function discoverWatchers() {
   // Fallback to legacy shims if project files missing
   if (!checkVAFn) {
     try {
-      const legacy = require('./watchers/va');
-      checkVAFn = legacy.runWatcher || legacy;
+      const vaLegacy = require('./watchers/va');
+      checkVAFn = vaLegacy.runWatcher || vaLegacy;
       console.log('[loader] falling back to ./watchers/va');
       discoveredWatchers.push({ key: 'va', name: 'VA (legacy)', path: path.join(__dirname, 'watchers', 'va.js'), route: '/scrape/va' });
     } catch (e) {
-      console.warn('[loader] no VA watcher available:', e && e.message ? e.message : e);
+      console.warn('[loader] no VA legacy watcher available:', e && e.message ? e.message : e);
     }
   }
 
   if (!checkEsundhedFn) {
     try {
-      const legacy = require('./watchers/esundhed');
-      checkEsundhedFn = legacy.checkEsundhedUpdate || legacy;
+      const esLegacy = require('./watchers/esundhed');
+      checkEsundhedFn = esLegacy.checkEsundhedUpdate || esLegacy;
       console.log('[loader] falling back to ./watchers/esundhed');
       discoveredWatchers.push({ key: 'esundhed', name: 'Sundhedsdatabank (legacy)', path: path.join(__dirname, 'watchers', 'esundhed.js'), route: '/scrape/esundhed' });
     } catch (e) {
-      console.warn('[loader] no eSundhed watcher available:', e && e.message ? e.message : e);
+      console.warn('[loader] no eSundhed legacy watcher available:', e && e.message ? e.message : e);
     }
   }
 }
@@ -207,7 +192,10 @@ function renderHeader() {
                 <img src="/assets/MarketBuddyLogo.png" alt="MarketBuddy" class="h-12 md:h-16 lg:h-20 w-auto object-contain">
       </a>
             <nav class="hidden md:flex gap-8 items-center text-sm text-slate-600">
-              <a href="/product/rebalancer" class="hover:text-slate-900">Index Overview</a>
+              <a href="/kaxcap" class="hover:text-slate-900">KAXCAP</a>
+              <a href="/hel" class="hover:text-slate-900">HEL</a>
+              <a href="/sto" class="hover:text-slate-900">STO</a>
+              <a href="/product/rebalancer" class="hover:text-slate-900">Index Rebalancer</a>
               <a href="/watchers" class="hover:text-slate-900">Watchers</a>
               <a href="/product/ai-analyst" class="hover:text-slate-900">AI Analyst</a>
                       <a href="/about" class="hover:text-slate-900">About</a>
@@ -346,6 +334,7 @@ async function renderDashboard(project = 'Universal') {
           <p class="mb-4 text-gray-600">Internal tool for ABG sales and trading: real-time watchers, index rebalancer proposals, and an AI analyst that provides fast, plain-language comments on rebalances and earnings deviations for quick distribution to the sales desk.</p>
           <div class="mt-4 flex items-center gap-4">
             <a href="/watchers" class="inline-block text-blue-600">Open Watchers →</a>
+            <a href="/kaxcap" class="inline-block text-blue-600">KAXCAP Index →</a>
             <a href="/product/rebalancer" class="inline-block text-blue-600">Index Rebalancer →</a>
           </div>
         </div>
@@ -479,6 +468,354 @@ app.get('/scrape/esundhed', async (_, res) => {
   await updateEsundhed();
   res.send('eSundhed scrape complete!');
 });
+
+app.get('/api/kaxcap/status', getLatestKaxcapStatus);
+
+// Trigger the KAXCAP FactSet Python worker manually
+app.post('/api/kaxcap/run', (req, res) => {
+  try {
+    const scriptPath = path.join(__dirname, 'workers', 'kaxcap-factset', 'main.py');
+    const pythonCmd = process.env.PYTHON || 'python3';
+    const args = [scriptPath];
+    const { region, indexId, asOf, quarterly } = Object.assign({}, req.query, req.body);
+    if (region) { args.push('--region', String(region).toUpperCase()); }
+    if (indexId) { args.push('--index-id', String(indexId)); }
+    if (asOf) { args.push('--as-of', String(asOf)); }
+    if (String(quarterly).toLowerCase() === 'true') { args.push('--quarterly'); }
+    execFile(pythonCmd, args, { env: process.env }, (error, stdout, stderr) => {
+      if (error) {
+        console.error('[kaxcap-run] error:', error);
+        if (stderr) console.error('[kaxcap-run] stderr:', stderr);
+        return res.status(500).json({ ok: false, error: String(error), stderr });
+      }
+      if (stderr) console.warn('[kaxcap-run] stderr:', stderr);
+      console.log('[kaxcap-run] stdout:', stdout);
+      return res.json({ ok: true, stdout });
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
+  }
+});
+
+// API: latest constituents for a given index id
+app.get('/api/index/:indexId/constituents', async (req, res) => {
+  try {
+    const indexId = req.params.indexId;
+    // latest as_of
+    const { data: dates, error: err1 } = await supabase
+      .from('index_constituents')
+      .select('as_of')
+      .eq('index_id', indexId)
+      .order('as_of', { ascending: false })
+      .limit(1);
+    if (err1) throw err1;
+    const asOf = dates && dates[0] ? dates[0].as_of : null;
+    let rows = [];
+    if (asOf) {
+      const { data, error: err2 } = await supabase
+        .from('index_constituents')
+        .select('*')
+        .eq('index_id', indexId)
+        .eq('as_of', asOf)
+        .order('weight', { ascending: false });
+      if (err2) throw err2;
+      rows = Array.isArray(data) ? data : [];
+    }
+    res.json({ asOf, rows });
+  } catch (e) {
+    res.status(500).json({ error: e && e.message ? e.message : String(e) });
+  }
+});
+
+// API: latest quarterly proforma for a given index id
+// Reads from a quarterly table if present; returns empty if not found.
+app.get('/api/index/:indexId/quarterly', async (req, res) => {
+  try {
+    const indexId = req.params.indexId;
+    // Try common quarterly table names
+    const tableCandidates = ['index_quarterly', 'index_quarterly_status', 'index_quarterly_proforma'];
+    let tableName = null;
+    for (const t of tableCandidates) {
+      try {
+        const { data, error } = await supabase.from(t).select('as_of').eq('index_id', indexId).order('as_of', { ascending: false }).limit(1);
+        if (!error && data && data.length) { tableName = t; break; }
+      } catch (e) { /* ignore */ }
+    }
+    if (!tableName) return res.json({ asOf: null, rows: [] });
+
+    const { data: dates, error: err1 } = await supabase
+      .from(tableName)
+      .select('as_of')
+      .eq('index_id', indexId)
+      .order('as_of', { ascending: false })
+      .limit(1);
+    if (err1) throw err1;
+    const asOf = dates && dates[0] ? dates[0].as_of : null;
+    let rows = [];
+    if (asOf) {
+      const { data, error: err2 } = await supabase
+        .from(tableName)
+        .select('*')
+        .eq('index_id', indexId)
+        .eq('as_of', asOf)
+        .order('new_weight', { ascending: false });
+      if (err2) throw err2;
+      rows = Array.isArray(data) ? data : [];
+    }
+    res.json({ asOf, rows });
+  } catch (e) {
+    res.status(500).json({ error: e && e.message ? e.message : String(e) });
+  }
+});
+// Index page: tabs for KAXCAP/HEL/STO with two tables and refresh controls
+app.get('/index', async (req, res) => {
+  try {
+    res.send(`
+      <html>
+        <head>${renderHead('Indexes')}</head>
+        <body class="bg-gray-50 p-6">
+          ${renderHeader()}
+          <main class="max-w-6xl mx-auto p-6">
+            <div class="bg-white rounded-xl shadow p-6">
+              <h1 class="text-3xl font-bold mb-4">Index Overview</h1>
+              <div class="flex gap-3 mb-4">
+                <button class="px-3 py-2 border rounded" data-idx="KAXCAP">KAXCAP (CPH)</button>
+                <button class="px-3 py-2 border rounded" data-idx="${process.env.HEL_INDEX_ID || 'HELXCAP'}">Helsinki</button>
+                <button class="px-3 py-2 border rounded" data-idx="${process.env.STO_INDEX_ID || 'OMXSALLS'}">Stockholm</button>
+                <span class="ml-auto"></span>
+                <button id="refreshBtn" class="px-3 py-2 bg-yellow-400 text-slate-900 rounded">Refresh Selected</button>
+              </div>
+
+              <div id="meta" class="text-sm text-slate-600 mb-2">Select an index to load data.</div>
+
+              <section class="mb-6">
+                <h2 class="font-semibold mb-2">Quarterly Proforma</h2>
+                <div id="quarterlyMeta" class="text-xs text-slate-500 mb-2"></div>
+                <div id="quarterlyTable"></div>
+              </section>
+
+              <section>
+                <h2 class="font-semibold mb-2">Daily Status</h2>
+                <div id="dailyMeta" class="text-xs text-slate-500 mb-2"></div>
+                <div id="dailyTable"></div>
+              </section>
+
+              <div class="mt-6"><a href="/" class="text-blue-600">← Back</a></div>
+            </div>
+          </main>
+          ${renderFooter()}
+          <script>
+            let selected = 'KAXCAP';
+            const btns = Array.from(document.querySelectorAll('button[data-idx]'));
+            const refreshBtn = document.getElementById('refreshBtn');
+            const helId = '${process.env.HEL_INDEX_ID || 'HELXCAP'}';
+            const stoId = '${process.env.STO_INDEX_ID || 'OMXSALLS'}';
+            const regionFor = (id) => (id === stoId) ? 'STO' : (id === helId) ? 'HEL' : 'CPH';
+            const aumByRegion = {
+              CPH: Number('${process.env.KAXCAP_AUM_DKK || '110000000000'}') || 110000000000,
+              HEL: Number('${process.env.HEL_AUM_EUR || '22000000000'}') || 22000000000,
+              STO: Number('${process.env.STO_AUM_SEK || '650000000000'}') || 650000000000
+            };
+            const currencyByRegion = { CPH: 'DKK', HEL: 'EUR', STO: 'SEK' };
+
+            btns.forEach(b => b.addEventListener('click', () => { selected = b.getAttribute('data-idx'); loadAll(); }));
+            refreshBtn.addEventListener('click', async () => {
+              try {
+                const region = regionFor(selected);
+                const r = await fetch('/api/kaxcap/run?region=' + region + '&indexId=' + selected, { method: 'POST' });
+                const json = await r.json();
+                document.getElementById('meta').textContent = 'Refresh triggered for ' + selected + (json.ok ? ' — OK' : (' — Error: ' + (json.error || 'unknown')));
+                setTimeout(loadAll, 1200);
+              } catch (e) {
+                document.getElementById('meta').textContent = 'Refresh failed: ' + (e && e.message ? e.message : e);
+              }
+            });
+
+            async function loadAll() {
+              document.getElementById('meta').textContent = 'Loading ' + selected + '…';
+              await Promise.all([loadQuarterly(), loadDaily()]);
+              document.getElementById('meta').textContent = 'Loaded ' + selected;
+            }
+
+            async function loadQuarterly() {
+              try {
+                const r = await fetch('/api/index/' + selected + '/quarterly');
+                const json = await r.json();
+                const rows = json.rows || [];
+                const region = regionFor(selected);
+                const aum = aumByRegion[region] || null;
+                const ccy = currencyByRegion[region] || '';
+                document.getElementById('quarterlyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Rows: ' + rows.length + ' · AUM (' + (ccy || 'CCY') + '): ' + (aum ? aum.toLocaleString('en-DK') : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/quarterly">JSON</a>';
+                const top = rows.slice(0, 200);
+                const trs = top.map(r => {
+                  const issuer = (r.issuer || r.ticker || '');
+                  const mcapBn = (r.mcap_bn != null) ? Number(r.mcap_bn) : (r.mcap != null ? (Number(r.mcap) / 1e9) : null);
+                  const currW = (r.old_weight != null) ? Number(r.old_weight) : null;
+                  const newW = (r.new_weight != null) ? Number(r.new_weight) : null;
+                  const deltaPct = (currW != null && newW != null) ? (newW - currW) : null;
+                  const deltaAmt = (aum && deltaPct != null) ? (aum * (deltaPct / 100)) : null;
+                  const deltaVol = (r.delta_vol != null) ? r.delta_vol : '';
+                  const dtc = (r.days_to_cover != null) ? r.days_to_cover : '';
+                  return '<tr class="border-b">'
+                    + '<td class="px-3 py-2 text-sm">' + issuer + '</td>'
+                    + '<td class="px-3 py-2 text-sm">' + (mcapBn != null ? mcapBn.toFixed(2) : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm">' + (currW != null ? currW.toFixed(2) + '%' : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm">' + (newW != null ? newW.toFixed(2) + '%' : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm">' + (deltaPct != null ? deltaPct.toFixed(2) + '%' : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm">' + (deltaAmt != null ? Math.round(deltaAmt).toLocaleString('en-DK') : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm">' + (deltaVol || '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm">' + (dtc || '') + '</td>'
+                    + '</tr>';
+                }).join('');
+                const header = '<tr><th class="px-3 py-2">Company Name</th><th class="px-3 py-2">Market Cap, bn</th><th class="px-3 py-2">Current</th><th class="px-3 py-2">Proforma</th><th class="px-3 py-2">Delta, %</th><th class="px-3 py-2">Delta, ' + (ccy || 'Amt') + '</th><th class="px-3 py-2">Delta, Vol</th><th class="px-3 py-2">Days to Cover</th></tr>';
+                document.getElementById('quarterlyTable').innerHTML = '<div class="overflow-auto"><table class="w-full text-left"><thead class="bg-gray-100">' + header + '</thead><tbody>' + (trs || '<tr><td class="px-3 py-4 text-sm text-slate-500" colspan="8">No data.</td></tr>') + '</tbody></table></div>';
+              } catch (e) {
+                document.getElementById('quarterlyMeta').textContent = 'Quarterly load failed';
+                document.getElementById('quarterlyTable').innerHTML = '';
+              }
+            }
+
+            async function loadDaily() {
+              try {
+                const r = await fetch('/api/index/' + selected + '/constituents');
+                const json = await r.json();
+                const rows = json.rows || [];
+                const totalW = rows.reduce((s, r) => s + (Number(r.weight) || 0), 0);
+                document.getElementById('dailyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Rows: ' + rows.length + ' · Sum(weight): ' + (totalW ? totalW.toFixed(6) : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/constituents">JSON</a>';
+                const top = rows.slice(0, 200);
+                const trs = top.map(r => (
+                  '<tr class="border-b">'
+                  + '<td class="px-3 py-2 font-mono text-sm">' + (r.ticker || '') + '</td>'
+                  + '<td class="px-3 py-2 text-sm">' + (r.issuer || '') + '</td>'
+                  + '<td class="px-3 py-2 text-sm">' + (r.region || '') + '</td>'
+                  + '<td class="px-3 py-2 text-sm">' + ((r.market_cap != null ? String(r.market_cap) : (r.mcap != null ? String(r.mcap) : ''))) + '</td>'
+                  + '<td class="px-3 py-2 text-sm">' + (r.weight != null ? Number(r.weight).toFixed(6) : '') + '</td>'
+                  + '<td class="px-3 py-2 text-sm">' + (r.capped ? 'capped' : '') + '</td>'
+                  + '</tr>'
+                )).join('');
+                document.getElementById('dailyTable').innerHTML = '<div class="overflow-auto"><table class="w-full text-left"><thead class="bg-gray-100"><tr><th class="px-3 py-2">Ticker</th><th class="px-3 py-2">Issuer</th><th class="px-3 py-2">Region</th><th class="px-3 py-2">Market Cap</th><th class="px-3 py-2">Weight</th><th class="px-3 py-2">Flags</th></tr></thead><tbody>' + (trs || '<tr><td class="px-3 py-4 text-sm text-slate-500" colspan="6">No data.</td></tr>') + '</tbody></table></div>';
+              } catch (e) {
+                document.getElementById('dailyMeta').textContent = 'Daily load failed';
+                document.getElementById('dailyTable').innerHTML = '';
+              }
+            }
+
+            async function loadDailyHistory() {
+              try {
+                const r = await fetch('/api/index/' + selected + '/constituents');
+                const json = await r.json();
+                const asOf = json.asOf || null;
+                // List last 5 distinct as_of dates for the selected index
+                const { rows } = json;
+                const dates = [...new Set((rows || []).map(x => x.as_of))].slice(0,5);
+                document.getElementById('dailyHistory').innerHTML = dates.length ? ('Recent as_of: ' + dates.map(d => '<a class="text-blue-600" href="/api/index/' + selected + '/constituents">' + d + '</a>').join(' · ')) : '';
+              } catch (e) {
+                document.getElementById('dailyHistory').textContent = '';
+              }
+            }
+
+            // Auto-refresh view every 5 minutes to feel live
+            setInterval(() => loadAll(), 5 * 60 * 1000);
+
+            loadAll();
+          </script>
+        </body>
+      </html>
+    `);
+  } catch (e) {
+    console.error('[ui] /index page failed:', e && e.message ? e.message : e);
+    res.status(500).send('Failed to load index page');
+  }
+});
+
+// Helper: render an index snapshot page for a given index_id
+async function renderIndexSnapshot(res, indexId, pageTitle) {
+  try {
+    const { data: dates, error: err1 } = await supabase
+      .from('index_constituents')
+      .select('as_of')
+      .eq('index_id', indexId)
+      .order('as_of', { ascending: false })
+      .limit(1);
+    if (err1) throw err1;
+    const asOf = dates && dates[0] ? dates[0].as_of : null;
+    let rows = [];
+    if (asOf) {
+      const { data, error: err2 } = await supabase
+        .from('index_constituents')
+        .select('*')
+        .eq('index_id', indexId)
+        .eq('as_of', asOf)
+        .order('weight', { ascending: false });
+      if (err2) throw err2;
+      rows = Array.isArray(data) ? data : [];
+    }
+
+    const totalW = rows.reduce((s, r) => s + (Number(r.weight) || 0), 0);
+    const tableRowsHtml = rows.slice(0, 1000).map(r =>
+      '<tr class="border-b">'
+      + '<td class="px-3 py-2 font-mono text-sm">' + (r.ticker || '') + '</td>'
+      + '<td class="px-3 py-2 text-sm">' + (r.issuer || '') + '</td>'
+      + '<td class="px-3 py-2 text-sm">' + (r.region || '') + '</td>'
+      + '<td class="px-3 py-2 text-sm">' + ((r.market_cap != null ? String(r.market_cap) : (r.mcap != null ? String(r.mcap) : ''))) + '</td>'
+      + '<td class="px-3 py-2 text-sm">' + (r.weight != null ? Number(r.weight).toFixed(6) : '') + '</td>'
+      + '<td class="px-3 py-2 text-sm">' + (r.capped ? 'capped' : '') + '</td>'
+      + '</tr>'
+    ).join('');
+
+    res.send(`
+<!doctype html>
+<html>
+  <head>${renderHead(pageTitle + ' — Latest Snapshot')}</head>
+  <body class="bg-gray-50 p-6">
+    ${renderHeader()}
+    <main class="max-w-6xl mx-auto p-6">
+      <div class="bg-white rounded-xl shadow p-6">
+        <h1 class="text-2xl font-bold mb-2">${pageTitle} — Latest Snapshot</h1>
+        <div class="text-sm text-slate-600 mb-4">
+          As of: ${asOf || 'unknown'} · Rows: ${rows.length} · Sum(weight): ${totalW ? totalW.toFixed(6) : 'n/a'}
+          · <a class="text-blue-600" href="/api/index/${indexId}/constituents">JSON</a>
+        </div>
+        <div class="overflow-auto border rounded">
+          <table class="w-full text-left">
+            <thead class="bg-gray-100">
+              <tr>
+                <th class="px-3 py-2">Ticker</th>
+                <th class="px-3 py-2">Issuer</th>
+                <th class="px-3 py-2">Region</th>
+                <th class="px-3 py-2">Market Cap</th>
+                <th class="px-3 py-2">Weight</th>
+                <th class="px-3 py-2">Flags</th>
+              </tr>
+            </thead>
+            <tbody>${tableRowsHtml || '<tr><td class="px-3 py-4 text-sm text-slate-500" colspan="6">No data yet.</td></tr>'}</tbody>
+          </table>
+        </div>
+        <div class="mt-6"><a href="/product/rebalancer" class="text-blue-600">Open Rebalancer</a></div>
+      </div>
+    </main>
+    ${renderFooter()}
+  </body>
+</html>`);
+  } catch (e) {
+    console.error('[ui] renderIndexSnapshot failed:', e && e.message ? e.message : e);
+    res.status(500).send('Failed to load index page');
+  }
+}
+
+// Region pages
+app.get('/kaxcap', async (req, res) => renderIndexSnapshot(res, 'KAXCAP', 'KAXCAP'));
+app.get('/hel', async (req, res) => {
+  const helId = process.env.HEL_INDEX_ID || 'HELXCAP';
+  return renderIndexSnapshot(res, helId, 'HEL Index');
+});
+app.get('/sto', async (req, res) => {
+  const stoId = process.env.STO_INDEX_ID || 'OMXSALLS';
+  return renderIndexSnapshot(res, stoId, 'STO Index');
+});
+
+// Provide a product URL alias that points to the same KAXCAP page
+app.get('/product/kaxcap', (req, res) => res.redirect(302, '/kaxcap'));
 
 // Watchers index: lists discovered watchers and links to per-watcher pages
 app.get('/watchers', async (req, res) => {
@@ -726,7 +1063,14 @@ app.post('/api/rebalancer/compute', async (req, res) => {
       try {
         const { data: rows, error } = await supabase.from('index_constituents').select('*').eq('index_id', indexId);
         if (!error && Array.isArray(rows) && rows.length > 0) {
-          data = rows.map(r => ({ ticker: r.ticker, issuer: r.issuer || r.ticker, price: r.price, mcap: Number(r.mcap || 0), avg_30d_volume: r.avg_daily_volume || r.avg_30d_volume || 0, currentWeight: Number(r.weight || r.capped_weight || 0) }));
+          data = rows.map(r => ({
+            ticker: r.ticker,
+            issuer: r.issuer || r.ticker,
+            price: r.price,
+            mcap: Number(r.mcap || r.market_cap || 0),
+            avg_30d_volume: r.avg_vol_30d || r.avg_daily_volume || r.avg_30d_volume || 0,
+            currentWeight: Number(r.weight || r.capped_weight || 0)
+          }));
         }
       } catch (e) {
         console.error('[api] failed to load index_constituents for compute:', e && e.message ? e.message : e);
@@ -905,16 +1249,17 @@ app.get('/product/rebalancer', async (req, res) => {
             <h2 class="font-semibold mb-2">Live / Preview Controls</h2>
             <div class="grid md:grid-cols-3 gap-3 items-end">
               <div>
-                <label class="text-xs text-slate-600">Index Id</label>
-                <input id="indexId" value="OMXCAPPGI" class="w-full px-3 py-2 rounded border" />
-              </div>
-              <div>
-                <label class="text-xs text-slate-600">Region</label>
+                <label class="text-xs text-slate-600">Market</label>
                 <select id="region" class="w-full px-3 py-2 rounded border">
                   <option value="CPH">Copenhagen (CPH)</option>
-                  <option value="STO">Stockholm (STO)</option>
                   <option value="HEL">Helsinki (HEL)</option>
+                  <option value="STO">Stockholm (STO)</option>
                 </select>
+              </div>
+              <div>
+                <label class="text-xs text-slate-600">Index</label>
+                <input id="indexId" class="w-full px-3 py-2 rounded border bg-gray-100" readonly />
+                <div class="text-xs text-slate-500 mt-1">Auto-selected from market</div>
               </div>
               <div>
                 <label class="text-xs text-slate-600">Quarterly preview</label>
@@ -975,9 +1320,21 @@ app.get('/product/rebalancer', async (req, res) => {
           + '</div>';
       }
 
+      const helId = '${process.env.HEL_INDEX_ID || 'HELXCAP'}';
+      const stoId = '${process.env.STO_INDEX_ID || 'OMXSALLS'}';
+      const cphId = 'OMXCAPPGI';
+      const regionSelect = document.getElementById('region');
+      const indexInput = document.getElementById('indexId');
+      function updateIndexId(){
+        const r = regionSelect.value;
+        indexInput.value = r === 'HEL' ? helId : (r === 'STO' ? stoId : cphId);
+      }
+      updateIndexId();
+      regionSelect.addEventListener('change', updateIndexId);
+
       document.getElementById('computeBtn')?.addEventListener('click', async () => {
-        const indexId = document.getElementById('indexId').value || 'OMXCAPPGI';
-        const region = document.getElementById('region').value || 'CPH';
+        const indexId = indexInput.value || cphId;
+        const region = regionSelect.value || 'CPH';
         const quarterly = document.getElementById('quarterly').checked;
         document.getElementById('resultsMeta').textContent = 'Computing…';
         try {
@@ -1139,3 +1496,5 @@ try {
 } catch (e) {
   console.log('[scheduler] node-cron not available or failed to load — scheduled runs disabled');
 }
+
+// end of file

@@ -1,0 +1,5 @@
+fds.sdk.Formula==2.2.1
+fds.sdk.utils
+pandas
+requests     
+python-dotenv 

@@ -282,6 +282,22 @@ Main project folder containing backend and frontend components.
   - `/` — Dashboard (watchers, memes, quick links)
   - `/watchers` — List available watchers and run them manually
   - `/product/rebalancer` — Rebalancer proposals (requires Supabase to persist)
+  - `/index` — Index overview (KAXCAP/HEL/STO) with two tables per index
+      Seeding for local verification
+      - Use the seed script to insert mock rows (since FactSet calls won’t work locally without allowlisted IPs):
+        - `node scripts/seed-index.js`
+        - Then open `/index` to verify Quarterly + Daily tables render.
+    - Quarterly Proforma: uncapped All-Share → Nasdaq quarterly capping (CPH/HEL 7%, STO 9%, aggregate limit, iterative caps down to 4.5% for top bands up to top 15). Includes uncapped vs capped shares, AUM and derived volumes.
+    - Daily Status: current capped weights ranked (daily rules: aggregate of >5% ≤ 40%, issuers >10% at exception cap, iterative 4.5% caps).
+    - Refresh button per index calls `/api/kaxcap/run?region=...&indexId=...` to trigger the Python worker.
+
+  Data flow
+  - Python worker (FactSet Formula) fetches, computes daily/quarterly, upserts to Supabase.
+  - Node server reads latest snapshots and renders JSON + tables. If local IP isn’t allow‑listed for FactSet, pages show empty until Supabase has rows.
+
+  Supabase tables (expected)
+  - Daily: `index_constituents` (index_id, ticker, name, price, shares, mcap, weight, avg_vol_30d, as_of; optional issuer, region, capped_weight).
+  - Quarterly: one of `index_quarterly`, `index_quarterly_status`, or `index_quarterly_proforma` (columns typically: ticker, issuer, old_weight, new_weight, flags, as_of).
 
   Contact
 

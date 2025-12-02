@@ -10,3 +10,34 @@ test-supabase.js
 
 
 .Methodology_Nordic_AllShare.pdf
+
+# Node
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment / secrets
+.env
+.env.*
+!.env.example   # optional template file without secrets
+
+# OS / editor
+.DS_Store
+.vscode/
+*.swp
+*~
+.idea/
+
+# Supabase / misc
+test-esundhed.js
+test-supabase.js
+
+# PDFs / local docs
+.Methodology_Nordic_AllShare.pdf
