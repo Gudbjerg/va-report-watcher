@@ -6,26 +6,56 @@ import pandas as pd
 import requests
 
 
-SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 
-# Re-use your existing env name. In your .env this is SUPABASE_KEY.
-# Make sure this is the **service role key**, not the anon key.
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_KEY"]
+# IMPORTANT: prefer service role key; fallback to SUPABASE_KEY if that's what you configured.
+SUPABASE_SERVICE_KEY = (
+    os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    or os.environ.get("SUPABASE_KEY")
+    or ""
+)
+
+# Columns expected in per-index tables
+WHITELIST_COLUMNS = {
+    "ticker",
+    "isin",
+    "name",
+    "price",
+    "shares",
+    "mcap",
+    "weight",
+    "capped_weight",
+    "avg_daily_volume",
+    "as_of",
+    "source",
+}
+
+
+def _table_for_index(index_id: str) -> str:
+    idx = (index_id or "").strip().upper()
+    mapping = {
+        "KAXCAP": "index_constituents_kaxcap",
+        "HELXCAP": "index_constituents_helxcap",
+        "OMXSALLS": "index_constituents_omxsalls",
+    }
+    return mapping.get(idx, f"index_constituents_{idx.lower()}")
 
 
 def upsert_index_constituents(df_status: pd.DataFrame) -> None:
     """
-    Upsert rows into public.index_constituents for (index_id, as_of).
-
-    Implementation: delete existing rows for that (index_id, as_of),
-    then insert the new snapshot.
+    Upsert rows into per-index tables for a given (index_id, as_of).
     """
     if df_status.empty:
         print("No rows to upsert.")
         return
 
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        print("Supabase env missing: SUPABASE_URL or SERVICE KEY is empty. Configure SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY.")
+        return
+
     idx = df_status["index_id"].iloc[0]
     as_of = df_status["as_of"].iloc[0]
+    table_name = _table_for_index(idx)
 
     headers = {
         "apikey": SUPABASE_SERVICE_KEY,
@@ -33,11 +63,11 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
         "Content-Type": "application/json",
     }
 
-    # 1) delete any old snapshot for this index + date
-    delete_url = f"{SUPABASE_URL}/rest/v1/index_constituents"
+    # Delete any existing snapshot for this date in the per-index table
+    delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
     delete_params = {
-        "index_id": f"eq.{idx}",
         "as_of": f"eq.{as_of}",
+        "apikey": SUPABASE_SERVICE_KEY,  # extra safety: include apikey in URL params
     }
     delete_resp = requests.delete(
         delete_url, headers=headers, params=delete_params)
@@ -45,15 +75,38 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
         print("Warning: delete failed:",
               delete_resp.status_code, delete_resp.text)
 
-    # 2) insert new rows with graceful fallback if optional columns don't exist
-    insert_url = f"{SUPABASE_URL}/rest/v1/index_constituents"
-    # Map calculated columns to Supabase schema where needed
-    df = df_status.copy()
-    # Supabase column is avg_daily_volume; map from avg_vol_30d if present
-    if "avg_vol_30d" in df.columns and "avg_daily_volume" not in df.columns:
-        df["avg_daily_volume"] = df["avg_vol_30d"]
-    payload = df.to_dict(orient="records")
-    insert_params = {"prefer": "resolution=merge-duplicates"}
+    # Build normalized payload
+    raw_payload = df_status.to_dict(orient="records")
+    normalized_payload = []
+    for row in raw_payload:
+        r = dict(row)
+        # Map avg_vol_30d -> avg_daily_volume (Supabase column)
+        if "avg_vol_30d" in r and "avg_daily_volume" not in r:
+            r["avg_daily_volume"] = r["avg_vol_30d"]
+        r.pop("avg_vol_30d", None)
+
+        # Remove fields not present in per-index tables
+        r.pop("issuer", None)
+        r.pop("region", None)
+        r.pop("index_id", None)
+
+        # Ensure types are numeric where expected
+        # (avoid 400s due to type coercion issues)
+        for num_key in ("price", "shares", "mcap", "weight", "capped_weight", "avg_daily_volume"):
+            if num_key in r and r[num_key] is not None:
+                try:
+                    r[num_key] = float(r[num_key])
+                except Exception:
+                    r[num_key] = None
+
+        # Default source lineage if not provided
+        r.setdefault("source", "factset")
+
+        normalized_payload.append(r)
+
+    insert_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
+    insert_params = {"prefer": "resolution=merge-duplicates",
+                     "apikey": SUPABASE_SERVICE_KEY}
 
     def _do_insert(rows):
         return requests.post(
@@ -63,40 +116,27 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
             data=json.dumps(rows),
         )
 
-    insert_resp = _do_insert(payload)
-    if not insert_resp.ok:
-        # Log full error body to aid debugging in Render
-        print("Supabase insert failed:", insert_resp.status_code)
-        try:
-            print("Error body:", insert_resp.text)
-        except Exception:
-            pass
+    # First attempt
+    insert_resp = _do_insert(normalized_payload)
+    if insert_resp.ok:
+        print(f"Inserted {len(normalized_payload)} rows into {table_name}.")
+        return
 
-        # Retry with a conservative trimmed schema of known columns
-        allowed = {
-            "index_id",
-            "ticker",
-            "name",
-            "price",
-            "shares",
-            "mcap",
-            "weight",
-            "capped_weight",
-            "avg_daily_volume",
-            "as_of",
-        }
-        trimmed = [{k: v for k, v in row.items() if k in allowed}
-                   for row in payload]
-        print("Retrying insert with trimmed payload (known columns only)…")
-        insert_resp2 = _do_insert(trimmed)
-        if not insert_resp2.ok:
-            print("Trimmed insert still failed:", insert_resp2.status_code)
-            try:
-                print("Error body:", insert_resp2.text)
-            except Exception:
-                pass
-            insert_resp2.raise_for_status()
+    print("Insert failed (first attempt):",
+          insert_resp.status_code, insert_resp.text)
+
+    # Fallback: trim to whitelist and retry
+    trimmed_payload = [
+        {k: v for k, v in row.items() if k in WHITELIST_COLUMNS}
+        for row in normalized_payload
+    ]
+
+    insert_resp2 = _do_insert(trimmed_payload)
+    if insert_resp2.ok:
         print(
-            f"Inserted {len(trimmed)} rows into index_constituents (trimmed schema).")
-    else:
-        print(f"Inserted {len(payload)} rows into index_constituents.")
+            f"Inserted {len(trimmed_payload)} rows into {table_name} (trimmed whitelist).")
+        return
+
+    print("Insert failed (second attempt):",
+          insert_resp2.status_code, insert_resp2.text)
+    insert_resp2.raise_for_status()

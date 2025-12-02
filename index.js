@@ -108,6 +108,14 @@ function discoverWatchers() {
     }
   }
 }
+// Map index_id to per-index table name; fallback to shared table
+function tableForIndex(indexId) {
+  const id = String(indexId || '').trim().toUpperCase();
+  if (id === 'KAXCAP') return 'index_constituents_kaxcap';
+  if (id === (process.env.HEL_INDEX_ID || 'HELXCAP')) return 'index_constituents_helxcap';
+  if (id === (process.env.STO_INDEX_ID || 'OMXSALLS')) return 'index_constituents_omxsalls';
+  return 'index_constituents';
+}
 
 // Run discovery at startup so scheduled jobs have their handlers available
 discoverWatchers();
@@ -501,21 +509,17 @@ app.post('/api/kaxcap/run', (req, res) => {
 app.get('/api/index/:indexId/constituents', async (req, res) => {
   try {
     const indexId = req.params.indexId;
-    // latest as_of
-    const { data: dates, error: err1 } = await supabase
-      .from('index_constituents')
-      .select('as_of')
-      .eq('index_id', indexId)
-      .order('as_of', { ascending: false })
-      .limit(1);
+    const tableName = tableForIndex(indexId);
+    // latest as_of (per-index tables do not have index_id)
+    const sel = supabase.from(tableName).select('as_of').order('as_of', { ascending: false }).limit(1);
+    const { data: dates, error: err1 } = await sel;
     if (err1) throw err1;
     const asOf = dates && dates[0] ? dates[0].as_of : null;
     let rows = [];
     if (asOf) {
       const { data, error: err2 } = await supabase
-        .from('index_constituents')
+        .from(tableName)
         .select('*')
-        .eq('index_id', indexId)
         .eq('as_of', asOf)
         .order('weight', { ascending: false });
       if (err2) throw err2;
@@ -731,10 +735,10 @@ app.get('/index', async (req, res) => {
 // Helper: render an index snapshot page for a given index_id
 async function renderIndexSnapshot(res, indexId, pageTitle) {
   try {
+    const tableName = tableForIndex(indexId);
     const { data: dates, error: err1 } = await supabase
-      .from('index_constituents')
+      .from(tableName)
       .select('as_of')
-      .eq('index_id', indexId)
       .order('as_of', { ascending: false })
       .limit(1);
     if (err1) throw err1;
@@ -742,9 +746,8 @@ async function renderIndexSnapshot(res, indexId, pageTitle) {
     let rows = [];
     if (asOf) {
       const { data, error: err2 } = await supabase
-        .from('index_constituents')
+        .from(tableName)
         .select('*')
-        .eq('index_id', indexId)
         .eq('as_of', asOf)
         .order('weight', { ascending: false });
       if (err2) throw err2;
@@ -1061,14 +1064,15 @@ app.post('/api/rebalancer/compute', async (req, res) => {
     // If no data provided, try to load from index_constituents table
     if ((!Array.isArray(data) || data.length === 0) && supabase) {
       try {
-        const { data: rows, error } = await supabase.from('index_constituents').select('*').eq('index_id', indexId);
+        const tableName = tableForIndex(indexId);
+        const { data: rows, error } = await supabase.from(tableName).select('*');
         if (!error && Array.isArray(rows) && rows.length > 0) {
           data = rows.map(r => ({
             ticker: r.ticker,
             issuer: r.issuer || r.ticker,
             price: r.price,
             mcap: Number(r.mcap || r.market_cap || 0),
-            avg_30d_volume: r.avg_vol_30d || r.avg_daily_volume || r.avg_30d_volume || 0,
+            avg_30d_volume: r.avg_daily_volume || 0,
             currentWeight: Number(r.weight || r.capped_weight || 0)
           }));
         }
