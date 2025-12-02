@@ -713,6 +713,39 @@ app.get('/api/rebalancer/proposals', async (_, res) => {
   }
 });
 
+// API: compute a rebalancer proposal from provided data or from `index_constituents` table
+app.post('/api/rebalancer/compute', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const indexId = body.indexId || body.index_id || 'OMXCAPPGI';
+    const options = body.options || {};
+    let data = body.data;
+
+    // If no data provided, try to load from index_constituents table
+    if ((!Array.isArray(data) || data.length === 0) && supabase) {
+      try {
+        const { data: rows, error } = await supabase.from('index_constituents').select('*').eq('index_id', indexId);
+        if (!error && Array.isArray(rows) && rows.length > 0) {
+          data = rows.map(r => ({ ticker: r.ticker, issuer: r.issuer || r.ticker, price: r.price, mcap: Number(r.mcap || 0), avg_30d_volume: r.avg_daily_volume || r.avg_30d_volume || 0, currentWeight: Number(r.weight || r.capped_weight || 0) }));
+        }
+      } catch (e) {
+        console.error('[api] failed to load index_constituents for compute:', e && e.message ? e.message : e);
+      }
+    }
+
+    // If still no data, require it from caller
+    if (!Array.isArray(data) || data.length === 0) return res.status(400).json({ error: 'No constituent data available. Provide `data` in request body or populate index_constituents table.' });
+
+    // Use the rebalancer compute module
+    const { computeProposal } = require('./projects/kaxcap-index/rebalancer');
+    const result = computeProposal(indexId, data, options);
+    return res.json({ proposal: result });
+  } catch (e) {
+    console.error('[api] compute rebalancer failed:', e && e.message ? e.message : e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
 app.post('/api/rebalancer/proposals', async (req, res) => {
   try {
     const payload = req.body || {};
@@ -858,7 +891,6 @@ app.get('/product/rebalancer', async (req, res) => {
       return `<li class="mb-3 border rounded p-3 bg-gray-50"><strong>${indexId}</strong> — ${created} <pre class="mt-2 text-xs">${JSON.stringify(payload, null, 2)}</pre></li>`;
     }).join('');
 
-    // Use shared header/footer and Tailwind like other pages for consistent UI
     res.send(`
   <html>
     <head>${renderHead('Index Rebalancer — Proposals')}</head>
@@ -867,12 +899,110 @@ app.get('/product/rebalancer', async (req, res) => {
       <main class="max-w-6xl mx-auto p-6">
         <div class="bg-white rounded-xl shadow p-6">
           <h1 class="text-3xl font-bold mb-4">Index Rebalancer — Proposals</h1>
-          <p class="text-sm text-gray-600 mb-4">This page shows persisted rebalancing proposals (from Supabase).</p>
-          <ul>${listItems || '<li class="text-sm text-gray-500">No proposals found</li>'}</ul>
+          <p class="text-sm text-gray-600 mb-4">This page shows persisted rebalancing proposals (from Supabase) and lets you run live or quarterly previews using the compute engine.</p>
+
+          <section class="mb-6 p-4 border rounded bg-gray-50">
+            <h2 class="font-semibold mb-2">Live / Preview Controls</h2>
+            <div class="grid md:grid-cols-3 gap-3 items-end">
+              <div>
+                <label class="text-xs text-slate-600">Index Id</label>
+                <input id="indexId" value="OMXCAPPGI" class="w-full px-3 py-2 rounded border" />
+              </div>
+              <div>
+                <label class="text-xs text-slate-600">Region</label>
+                <select id="region" class="w-full px-3 py-2 rounded border">
+                  <option value="CPH">Copenhagen (CPH)</option>
+                  <option value="STO">Stockholm (STO)</option>
+                  <option value="HEL">Helsinki (HEL)</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-slate-600">Quarterly preview</label>
+                <div class="flex items-center gap-2">
+                  <input type="checkbox" id="quarterly" />
+                  <label for="quarterly" class="text-sm">Enable quarterly exceptions</label>
+                </div>
+              </div>
+            </div>
+            <div class="mt-3 flex gap-3">
+              <button id="computeBtn" class="px-4 py-2 bg-blue-600 text-white rounded">Compute Preview</button>
+              <button id="showPersisted" class="px-4 py-2 border rounded">Show Persisted Proposals</button>
+            </div>
+          </section>
+
+          <section id="results" class="mb-6 p-4 border rounded bg-white">
+            <h2 class="font-semibold mb-2">Preview Results</h2>
+            <div id="resultsMeta" class="text-sm text-slate-600 mb-3">No preview computed yet.</div>
+            <div id="resultsTable"></div>
+          </section>
+
+          <section class="mt-6">
+            <h2 class="font-semibold mb-2">Recent Persisted Proposals</h2>
+            <ul>${listItems || '<li class="text-sm text-gray-500">No proposals found</li>'}</ul>
+          </section>
+
           <div class="mt-6"><a href="/watchers" class="text-blue-600">← Back to Watchers</a></div>
         </div>
       </main>
     ${renderFooter()}
+
+    <script>
+      async function renderProposal(proposal) {
+        const meta = proposal.meta || {};
+        document.getElementById('resultsMeta').textContent =
+          'Generated: ' + (meta.generated_at || '') + ' — Method: ' + (meta.method || '');
+        const rows = proposal.proposed || [];
+        rows.sort((a,b) => (b.newWeight || 0) - (a.newWeight || 0));
+        const top = rows.slice(0, 200);
+
+        // Build without template literals to avoid nested backticks
+        const tableRows = top.map(function(r) {
+          return '<tr class="border-b">'
+            + '<td class="px-3 py-2 font-mono text-sm">' + (r.ticker || '') + '</td>'
+            + '<td class="px-3 py-2 text-sm">' + (r.issuer || '') + '</td>'
+            + '<td class="px-3 py-2 text-sm">' + ((r.oldWeight || 0).toFixed(6)) + '</td>'
+            + '<td class="px-3 py-2 text-sm">' + ((r.newWeight || 0).toFixed(6)) + '</td>'
+            + '<td class="px-3 py-2 text-sm">' + (r.capped ? '<span class="text-red-600 font-semibold">capped</span>' : '') + '</td>'
+            + '</tr>';
+        }).join('');
+
+        document.getElementById('resultsTable').innerHTML =
+          '<div class="overflow-auto">'
+          + '<table class="w-full text-left">'
+          + '<thead><tr class="bg-gray-100"><th class="px-3 py-2">Ticker</th><th class="px-3 py-2">Issuer</th><th class="px-3 py-2">Old W</th><th class="px-3 py-2">New W</th><th class="px-3 py-2">Flags</th></tr></thead>'
+          + '<tbody>' + tableRows + '</tbody>'
+          + '</table>'
+          + '</div>';
+      }
+
+      document.getElementById('computeBtn')?.addEventListener('click', async () => {
+        const indexId = document.getElementById('indexId').value || 'OMXCAPPGI';
+        const region = document.getElementById('region').value || 'CPH';
+        const quarterly = document.getElementById('quarterly').checked;
+        document.getElementById('resultsMeta').textContent = 'Computing…';
+        try {
+          const res = await fetch('/api/rebalancer/compute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ indexId, options: { region, quarterly } })
+          });
+          const json = await res.json();
+          if (json.error) {
+            document.getElementById('resultsMeta').textContent = 'Error: ' + json.error;
+            document.getElementById('resultsTable').innerHTML = '';
+            return;
+          }
+          renderProposal(json.proposal);
+        } catch (e) {
+          document.getElementById('resultsMeta').textContent = 'Compute failed: ' + (e && e.message ? e.message : e);
+        }
+      });
+
+      document.getElementById('showPersisted')?.addEventListener('click', () => {
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      });
+    </script>
+
     </body>
   </html>
     `);
