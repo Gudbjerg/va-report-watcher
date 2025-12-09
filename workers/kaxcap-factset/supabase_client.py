@@ -1,5 +1,6 @@
 # workers/kaxcap-factset/supabase_client.py
 import json
+import math
 import os
 
 import pandas as pd
@@ -91,6 +92,9 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
             if num_key in r and r[num_key] is not None:
                 try:
                     r[num_key] = float(r[num_key])
+                    # *** NEW: clean NaN/inf ***
+                    if math.isnan(r[num_key]) or math.isinf(r[num_key]):
+                        r[num_key] = None
                 except Exception:
                     r[num_key] = None
 
@@ -98,6 +102,7 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
         r.setdefault("source", "factset")
 
         normalized_payload.append(r)
+
 
     # Prefer SDK path if available (ensures headers and auth are correct)
     if _create_supabase_client is not None:
