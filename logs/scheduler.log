@@ -2,3 +2,27 @@
 [2025-12-02T17:00:03.131Z] VA result: no-change or null
 [2025-12-02T17:00:04.079Z] eSundhed result: no-change or null
 [2025-12-02T17:00:04.080Z] scheduled run complete (duration_ms=3233)
+[2025-12-09T16:28:48.393Z] startup FactSet error region=CPH index=KAXCAP: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region CPH --index-id KAXCAP
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 6, in <module>
+    from factset_client import fetch_index_raw
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/factset_client.py", line 6, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+
+[2025-12-09T16:28:48.430Z] startup FactSet error region=HEL index=HELXCAP: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region HEL --index-id HELXCAP
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 6, in <module>
+    from factset_client import fetch_index_raw
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/factset_client.py", line 6, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+
+[2025-12-09T16:28:48.462Z] startup FactSet error region=STO index=OMXSALLS: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region STO --index-id OMXSALLS
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 6, in <module>
+    from factset_client import fetch_index_raw
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/factset_client.py", line 6, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+

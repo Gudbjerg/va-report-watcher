@@ -116,6 +116,14 @@ function tableForIndex(indexId) {
   if (id === (process.env.STO_INDEX_ID || 'OMXSALLS')) return 'index_constituents_omxsalls';
   return 'index_constituents';
 }
+// Map index_id to per-index quarterly table name
+function quarterlyTableForIndex(indexId) {
+  const id = String(indexId || '').trim().toUpperCase();
+  if (id === 'KAXCAP') return 'index_quarterly_kaxcap';
+  if (id === (process.env.HEL_INDEX_ID || 'HELXCAP')) return 'index_quarterly_helxcap';
+  if (id === (process.env.STO_INDEX_ID || 'OMXSALLS')) return 'index_quarterly_omxsalls';
+  return null;
+}
 
 // Run discovery at startup so scheduled jobs have their handlers available
 discoverWatchers();
@@ -280,8 +288,8 @@ function rankBy(rows, key, desc = true) {
 
 app.get('/kaxcap', async (req, res) => {
   try {
-    const rows = await fetchIndexRows('KAXCAP');
-    // Rank by uncapped mcap and show Top 25
+    const rows = (await fetchIndexRows('KAXCAP')).filter(r => Number(r.mcap_uncapped || 0) > 0);
+    // Rank by uncapped mcap and show Top 25 (non-zero rows)
     const ranked = rankBy(rows, 'mcap_uncapped', true).slice(0, 25);
     const cols = [
       { key: 'ticker', label: 'Ticker' },
@@ -303,7 +311,7 @@ app.get('/kaxcap', async (req, res) => {
 
 app.get('/hel', async (req, res) => {
   try {
-    const rows = await fetchIndexRows(process.env.HEL_INDEX_ID || 'HELXCAP');
+    const rows = (await fetchIndexRows(process.env.HEL_INDEX_ID || 'HELXCAP')).filter(r => Number(r.mcap_uncapped || 0) > 0);
     const ranked = rankBy(rows, 'mcap_uncapped', true).slice(0, 25);
     const cols = [
       { key: 'ticker', label: 'Ticker' },
@@ -323,27 +331,72 @@ app.get('/hel', async (req, res) => {
   }
 });
 
-app.get('/product/rebalancer', async (req, res) => {
+app.get('/sto', async (req, res) => {
   try {
-    const rowsKax = await fetchIndexRows('KAXCAP');
-    const rowsHel = await fetchIndexRows(process.env.HEL_INDEX_ID || 'HELXCAP');
-    const rowsSto = await fetchIndexRows(process.env.STO_INDEX_ID || 'OMXSALLS');
+    const rows = (await fetchIndexRows(process.env.STO_INDEX_ID || 'OMXSALLS')).filter(r => Number(r.mcap_uncapped || 0) > 0);
+    const ranked = rankBy(rows, 'mcap_uncapped', true).slice(0, 25);
     const cols = [
       { key: 'ticker', label: 'Ticker' },
       { key: 'name', label: 'Name' },
+      { key: 'mcap_uncapped', label: 'Mcap (uncapped)', format: (v) => Number(v || 0).toLocaleString() },
+      { key: 'curr_weight_uncapped', label: 'Current Uncapped', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
+      { key: 'curr_weight_capped', label: 'Current Capped', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
+      { key: 'weight', label: 'Proforma Weight', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
+      { key: 'delta_pct', label: 'Delta (vs capped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
+      { key: 'days_to_cover', label: 'Days to Cover', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+      { key: 'delta_vol', label: 'Delta Vol (millions)', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+    ];
+    const html = ['<!doctype html><html><head>', renderHead('STO — Daily Status (Top 25 Uncapped Order, Delta Vol in millions)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('STO — Daily Status (Top 25 Uncapped Order, Delta Vol in millions)', ranked, cols), renderFooter(), '</body></html>'].join('');
+    res.send(html);
+  } catch (e) {
+    res.status(500).send(String(e && e.message ? e.message : e));
+  }
+});
+
+app.get('/product/rebalancer', async (req, res) => {
+  try {
+    // Read from per-index quarterly proforma tables and show Top 15
+    async function fetchQuarterly(indexId) {
+      const qt = quarterlyTableForIndex(indexId);
+      if (!qt) return [];
+      const { data: dates, error: err1 } = await supabase
+        .from(qt)
+        .select('as_of')
+        .order('as_of', { ascending: false })
+        .limit(1);
+      if (err1) return [];
+      const asOf = dates && dates[0] ? dates[0].as_of : null;
+      if (!asOf) return [];
+      const { data, error: err2 } = await supabase
+        .from(qt)
+        .select('*')
+        .eq('as_of', asOf)
+        .order('new_weight', { ascending: false })
+        .limit(1000);
+      if (err2) return [];
+      return Array.isArray(data) ? data : [];
+    }
+
+    const rowsKax = await fetchQuarterly('KAXCAP');
+    const rowsHel = await fetchQuarterly(process.env.HEL_INDEX_ID || 'HELXCAP');
+    const rowsSto = await fetchQuarterly(process.env.STO_INDEX_ID || 'OMXSALLS');
+
+    const cols = [
+      { key: 'ticker', label: 'Ticker' },
+      { key: 'issuer', label: 'Name' },
       { key: 'price', label: 'Price', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 4 }) },
       { key: 'shares', label: 'Shares', format: (v) => Number(v || 0).toLocaleString() },
       { key: 'mcap_uncapped', label: 'Uncapped Mcap', format: (v) => Number(v || 0).toLocaleString() },
-      { key: 'weight', label: 'Target Weight', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'capped_weight', label: 'Capped Weight', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'delta_pct', label: 'Delta %', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
+      { key: 'new_weight', label: 'Proforma Weight', format: (v) => (Number(v || 0)).toFixed(4) + '%' },
+      { key: 'old_weight', label: 'Current Capped', format: (v) => (Number(v || 0)).toFixed(4) + '%' },
+      { key: 'delta_pct', label: 'Delta %', format: (v) => (Number(v || 0)).toFixed(4) + '%' },
       { key: 'delta_ccy', label: 'Delta CCY', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
       { key: 'delta_vol', label: 'Delta Vol (millions)', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
       { key: 'days_to_cover', label: 'Days to Cover', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
     ];
-    const kaxRanked = rankBy(rowsKax, 'mcap_uncapped', true).slice(0, 300);
-    const helRanked = rankBy(rowsHel, 'mcap_uncapped', true).slice(0, 300);
-    const stoRanked = rankBy(rowsSto, 'mcap_uncapped', true).slice(0, 300);
+    const kaxRanked = rowsKax.slice(0, 15);
+    const helRanked = rowsHel.slice(0, 15);
+    const stoRanked = rowsSto.slice(0, 15);
     const html = ['<!doctype html><html><head>', renderHead('Index Rebalancer'), '</head><body class="bg-gray-50">', renderHeader(),
       renderIndexTable('KAXCAP — Quarterly Proforma (Delta Vol in millions)', kaxRanked, cols),
       renderIndexTable('HELXCAP — Quarterly Proforma (Delta Vol in millions)', helRanked, cols),
@@ -396,10 +449,6 @@ async function renderDashboard(project = 'Universal') {
   return `<!doctype html>
   <html lang="en">
     <head>
-  const kaxcap = await fetchIndexRows('KAXCAP');
-  const helxcap = await fetchIndexRows(process.env.HEL_INDEX_ID || 'HELXCAP');
-  const omxsalls = await fetchIndexRows(process.env.STO_INDEX_ID || 'OMXSALLS');
-
       <style>/* small helper to make posted meme images scale */
         .meme-img{width:100%;height:auto;object-fit:cover;border-radius:8px}
         .meme-img{max-height:400px;}
@@ -410,11 +459,7 @@ async function renderDashboard(project = 'Universal') {
     <body class="bg-gray-50 text-gray-800 font-sans">
       ${renderHeader()}
 
-  const html = ['<!doctype html><html><head>', renderHead('Index Rebalancer'), '</head><body class="bg-gray-50">', renderHeader(),
-    renderIndexTable('KAXCAP — Proforma', kaxcap, cols),
-    renderIndexTable('HELXCAP — Proforma', helxcap, cols),
-    renderIndexTable('OMXSALLS — Proforma', omxsalls, cols),
-    renderFooter(), '</body></html>'].join('');
+  
         <div class="max-w-6xl mx-auto px-6 py-16 grid grid-cols-1 md:grid-cols-3 gap-8 items-center">
           <div class="md:col-span-2">
             <div class="mb-6 text-sm text-yellow-300 uppercase tracking-wide">Powered by ABG Sundal Collier</div>
@@ -661,21 +706,12 @@ app.get('/api/index/:indexId/constituents', async (req, res) => {
 app.get('/api/index/:indexId/quarterly', async (req, res) => {
   try {
     const indexId = req.params.indexId;
-    // Try common quarterly table names
-    const tableCandidates = ['index_quarterly', 'index_quarterly_status', 'index_quarterly_proforma'];
-    let tableName = null;
-    for (const t of tableCandidates) {
-      try {
-        const { data, error } = await supabase.from(t).select('as_of').eq('index_id', indexId).order('as_of', { ascending: false }).limit(1);
-        if (!error && data && data.length) { tableName = t; break; }
-      } catch (e) { /* ignore */ }
-    }
+    const tableName = quarterlyTableForIndex(indexId);
     if (!tableName) return res.json({ asOf: null, rows: [] });
 
     const { data: dates, error: err1 } = await supabase
       .from(tableName)
       .select('as_of')
-      .eq('index_id', indexId)
       .order('as_of', { ascending: false })
       .limit(1);
     if (err1) throw err1;
@@ -685,7 +721,6 @@ app.get('/api/index/:indexId/quarterly', async (req, res) => {
       const { data, error: err2 } = await supabase
         .from(tableName)
         .select('*')
-        .eq('index_id', indexId)
         .eq('as_of', asOf)
         .order('new_weight', { ascending: false });
       if (err2) throw err2;
@@ -760,7 +795,7 @@ app.get('/index', async (req, res) => {
                 const aum = aumByRegion[region] || null;
                 const ccy = currencyByRegion[region] || '';
                 document.getElementById('quarterlyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Rows: ' + rows.length + ' · AUM (' + (ccy || 'CCY') + '): ' + (aum ? aum.toLocaleString('en-DK') : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/quarterly">JSON</a>';
-                const top = rows.slice(0, 200);
+                const top = rows.slice(0, 15);
                 const trs = top.map(r => {
                   const issuer = (r.issuer || r.ticker || '');
                   const mcapBn = (r.mcap_bn != null) ? Number(r.mcap_bn) : (r.mcap != null ? (Number(r.mcap) / 1e9) : null);
@@ -781,7 +816,7 @@ app.get('/index', async (req, res) => {
                     + '<td class="px-3 py-2 text-sm">' + (dtc || '') + '</td>'
                     + '</tr>';
                 }).join('');
-                const header = '<tr><th class="px-3 py-2">Company Name</th><th class="px-3 py-2">Market Cap, bn</th><th class="px-3 py-2">Current</th><th class="px-3 py-2">Proforma</th><th class="px-3 py-2">Delta, %</th><th class="px-3 py-2">Delta, ' + (ccy || 'Amt') + '</th><th class="px-3 py-2">Delta, Vol</th><th class="px-3 py-2">Days to Cover</th></tr>';
+                const header = '<tr><th class="px-3 py-2">Company Name</th><th class="px-3 py-2">Market Cap, bn</th><th class="px-3 py-2">Current</th><th class="px-3 py-2">Proforma</th><th class="px-3 py-2">Delta, %</th><th class="px-3 py-2">Delta, ' + (ccy || 'Amt') + '</th><th class="px-3 py-2">Delta, Vol (millions)</th><th class="px-3 py-2">Days to Cover</th></tr>';
                 document.getElementById('quarterlyTable').innerHTML = '<div class="overflow-auto"><table class="w-full text-left"><thead class="bg-gray-100">' + header + '</thead><tbody>' + (trs || '<tr><td class="px-3 py-4 text-sm text-slate-500" colspan="8">No data.</td></tr>') + '</tbody></table></div>';
               } catch (e) {
                 document.getElementById('quarterlyMeta').textContent = 'Quarterly load failed';
@@ -796,7 +831,7 @@ app.get('/index', async (req, res) => {
                 const rows = json.rows || [];
                 const totalW = rows.reduce((s, r) => s + (Number(r.weight) || 0), 0);
                 document.getElementById('dailyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Rows: ' + rows.length + ' · Sum(weight): ' + (totalW ? totalW.toFixed(6) : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/constituents">JSON</a>';
-                const top = rows.slice(0, 200);
+                const top = rows.slice(0, 25);
                 const trs = top.map(r => (
                   '<tr class="border-b">'
                   + '<td class="px-3 py-2 font-mono text-sm">' + (r.ticker || '') + '</td>'
@@ -916,16 +951,7 @@ async function renderIndexSnapshot(res, indexId, pageTitle) {
   }
 }
 
-// Region pages
-app.get('/kaxcap', async (req, res) => renderIndexSnapshot(res, 'KAXCAP', 'KAXCAP'));
-app.get('/hel', async (req, res) => {
-  const helId = process.env.HEL_INDEX_ID || 'HELXCAP';
-  return renderIndexSnapshot(res, helId, 'HEL Index');
-});
-app.get('/sto', async (req, res) => {
-  const stoId = process.env.STO_INDEX_ID || 'OMXSALLS';
-  return renderIndexSnapshot(res, stoId, 'STO Index');
-});
+// Region snapshot routes removed to avoid overriding daily Top 25 pages
 
 // Provide a product URL alias that points to the same KAXCAP page
 app.get('/product/kaxcap', (req, res) => res.redirect(302, '/kaxcap'));
