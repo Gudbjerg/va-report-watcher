@@ -128,6 +128,8 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
     delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
     delete_params = {
         "as_of": f"eq.{as_of}",
+        # Include apikey as query param to satisfy Supabase gateway even if headers are stripped
+        "apikey": SUPABASE_SERVICE_KEY,
     }
     delete_resp = requests.delete(
         delete_url, headers=headers, params=delete_params)
@@ -142,10 +144,15 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
         if os.environ.get("DEBUG_SUPABASE"):
             key_len = len(SUPABASE_SERVICE_KEY or '')
             print(
-                f"[debug] POST {insert_url} (no query params), rows={len(rows)}, key_len={key_len}")
+                f"[debug] POST {insert_url} (?apikey=***), rows={len(rows)}, key_len={key_len}")
             print(
                 f"[debug] headers contain apikey={'apikey' in headers}, Authorization={'Authorization' in headers}")
-        return requests.post(insert_url, headers=headers, data=json.dumps(rows))
+        return requests.post(
+            insert_url,
+            headers=headers,
+            params={"apikey": SUPABASE_SERVICE_KEY},
+            data=json.dumps(rows),
+        )
 
     # First attempt
     insert_resp = _do_insert(normalized_payload)
