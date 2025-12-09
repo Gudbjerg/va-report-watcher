@@ -5,6 +5,12 @@ import os
 import pandas as pd
 import requests
 
+try:
+    # Prefer official SDK when available; we'll fall back to raw HTTP otherwise
+    from supabase import create_client as _create_supabase_client  # type: ignore
+except Exception:
+    _create_supabase_client = None
+
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 
@@ -65,18 +71,7 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
         "Prefer": "resolution=merge-duplicates",
     }
 
-    # Delete any existing snapshot for this date in the per-index table
-    delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
-    delete_params = {
-        "as_of": f"eq.{as_of}",
-    }
-    delete_resp = requests.delete(
-        delete_url, headers=headers, params=delete_params)
-    if not delete_resp.ok:
-        print("Warning: delete failed:",
-              delete_resp.status_code, delete_resp.text)
-
-    # Build normalized payload
+    # Build normalized payload early so both SDK and raw paths can reuse it
     raw_payload = df_status.to_dict(orient="records")
     normalized_payload = []
     for row in raw_payload:
@@ -92,7 +87,6 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
         r.pop("index_id", None)
 
         # Ensure types are numeric where expected
-        # (avoid 400s due to type coercion issues)
         for num_key in ("price", "shares", "mcap", "weight", "capped_weight", "avg_daily_volume"):
             if num_key in r and r[num_key] is not None:
                 try:
@@ -105,18 +99,53 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
 
         normalized_payload.append(r)
 
+    # Prefer SDK path if available (ensures headers and auth are correct)
+    if _create_supabase_client is not None:
+        try:
+            client = _create_supabase_client(
+                SUPABASE_URL, SUPABASE_SERVICE_KEY)
+            try:
+                client.table(table_name).delete().eq('as_of', as_of).execute()
+            except Exception as de:
+                print("Warning: SDK delete failed:", de)
+            try:
+                res = client.table(table_name).insert(
+                    normalized_payload).execute()
+                inserted = 0
+                try:
+                    inserted = len(getattr(res, 'data', []) or [])
+                except Exception:
+                    inserted = len(normalized_payload)
+                print(
+                    f"Inserted {inserted or len(normalized_payload)} rows into {table_name} (SDK).")
+                return
+            except Exception as ie:
+                print("SDK insert failed, falling back to raw requests:", ie)
+        except Exception as e:
+            print("Warning: failed to init Supabase SDK, using raw requests:", e)
+
+    # RAW HTTP PATH — Delete any existing snapshot for this date in the per-index table
+    delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
+    delete_params = {
+        "as_of": f"eq.{as_of}",
+    }
+    delete_resp = requests.delete(
+        delete_url, headers=headers, params=delete_params)
+    if not delete_resp.ok:
+        print("Warning: delete failed:",
+              delete_resp.status_code, delete_resp.text)
+
     insert_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
     # No query params needed; headers carry auth + Prefer resolution
 
     def _do_insert(rows):
         if os.environ.get("DEBUG_SUPABASE"):
+            key_len = len(SUPABASE_SERVICE_KEY or '')
             print(
-                f"[debug] POST {insert_url} (no query params), rows={len(rows)}")
-        return requests.post(
-            insert_url,
-            headers=headers,
-            data=json.dumps(rows),
-        )
+                f"[debug] POST {insert_url} (no query params), rows={len(rows)}, key_len={key_len}")
+            print(
+                f"[debug] headers contain apikey={'apikey' in headers}, Authorization={'Authorization' in headers}")
+        return requests.post(insert_url, headers=headers, data=json.dumps(rows))
 
     # First attempt
     insert_resp = _do_insert(normalized_payload)

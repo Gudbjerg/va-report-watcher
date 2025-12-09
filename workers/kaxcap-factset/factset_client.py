@@ -24,8 +24,10 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 FACTSET_USERNAME = os.environ.get("FACTSET_USERNAME_SERIAL", "")
 FACTSET_API_KEY = os.environ.get("FACTSET_API_KEY", "")
+# We fetch a point-in-time cross-section (snapshot), not a time-series.
+# Use the Cross-Sectional endpoint by default, unless overridden via env.
 FACTSET_FORMULA_URL = os.environ.get(
-    "FACTSET_FORMULA_URL", "https://api.factset.com/formula-api/v1/time-series")
+    "FACTSET_FORMULA_URL", "https://api.factset.com/formula-api/v1/cross-sectional")
 
 
 # --- CLIENT ----------------------------------------------------------------
@@ -72,6 +74,7 @@ def _build_formulas(region: str) -> Dict[str, Any]:
             f'EXG_OMX_SHARES(NOW,,,"OMXCALLS","PI","{ccy}","ND")',
             'P_VOLUME_AVG(30)'
         ],
+        # Cross-sectional supports flatten=Y and universe expression
         "flatten": "Y"
     }
 

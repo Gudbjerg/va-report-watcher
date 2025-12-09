@@ -3,3 +3,4 @@ fds.sdk.utils
 pandas
 requests     
 python-dotenv 
+supabase>=2.5,<3.0
