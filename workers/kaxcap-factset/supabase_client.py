@@ -127,41 +127,32 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
     # RAW HTTP PATH — Delete any existing snapshot for this date in the per-index table
     delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
     delete_params = {
-        "as_of": f"eq.{as_of}",
-        # Include apikey as query param to satisfy Supabase gateway even if headers are stripped
-        "apikey": SUPABASE_SERVICE_KEY,
+        "as_of": f"eq.{as_of}",   # filter on as_of only
     }
-    delete_resp = requests.delete(
-        delete_url, headers=headers, params=delete_params)
+    delete_resp = requests.delete(delete_url, headers=headers, params=delete_params)
     if not delete_resp.ok:
-        print("Warning: delete failed:",
-              delete_resp.status_code, delete_resp.text)
+        print("Warning: delete failed:", delete_resp.status_code, delete_resp.text)
 
     insert_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
-    # No query params needed; headers carry auth + Prefer resolution
 
     def _do_insert(rows):
         if os.environ.get("DEBUG_SUPABASE"):
-            key_len = len(SUPABASE_SERVICE_KEY or '')
+            key_len = len(SUPABASE_SERVICE_KEY or "")
+            print(f"[debug] POST {insert_url}, rows={len(rows)}, key_len={key_len}")
             print(
-                f"[debug] POST {insert_url} (?apikey=***), rows={len(rows)}, key_len={key_len}")
-            print(
-                f"[debug] headers contain apikey={'apikey' in headers}, Authorization={'Authorization' in headers}")
-        return requests.post(
-            insert_url,
-            headers=headers,
-            params={"apikey": SUPABASE_SERVICE_KEY},
-            data=json.dumps(rows),
-        )
+                f"[debug] headers contain apikey={'apikey' in headers}, "
+                f"Authorization={'Authorization' in headers}"
+            )
+        # Use json= so requests sets the header and encodes payload cleanly
+        return requests.post(insert_url, headers=headers, json=rows)
 
-    # First attempt
+    # First attempt – full payload
     insert_resp = _do_insert(normalized_payload)
     if insert_resp.ok:
         print(f"Inserted {len(normalized_payload)} rows into {table_name}.")
         return
 
-    print("Insert failed (first attempt):",
-          insert_resp.status_code, insert_resp.text)
+    print("Insert failed (first attempt):", insert_resp.status_code, insert_resp.text)
 
     # Fallback: trim to whitelist and retry
     trimmed_payload = [
@@ -172,9 +163,11 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
     insert_resp2 = _do_insert(trimmed_payload)
     if insert_resp2.ok:
         print(
-            f"Inserted {len(trimmed_payload)} rows into {table_name} (trimmed whitelist).")
+            f"Inserted {len(trimmed_payload)} rows into {table_name} (trimmed whitelist)."
+        )
         return
 
-    print("Insert failed (second attempt):",
-          insert_resp2.status_code, insert_resp2.text)
+    # *** This is where the detailed Supabase JSON error will appear ***
+    print("Insert failed (second attempt):", insert_resp2.status_code, insert_resp2.text)
     insert_resp2.raise_for_status()
+

@@ -1,5 +1,5 @@
 # workers/kaxcap-factset/kaxcap_calcs.py
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Dict, Tuple
 
 import pandas as pd
@@ -153,7 +153,11 @@ def build_status(df_raw: pd.DataFrame, as_of: date, index_id: str, region: str, 
 
     # Prepare output for DB
     out["index_id"] = index_id
-    out["as_of"] = as_of.isoformat()
+
+    # Represent as_of as a full ISO timestamp suitable for timestamptz
+    as_of_dt = datetime.combine(as_of, datetime.min.time(), tzinfo=timezone.utc)
+    out["as_of"] = as_of_dt.isoformat()
+
     out["weight"] = out["newWeight"].astype("float64")
     out["capped_weight"] = None
     out["region"] = (region or "").upper()
