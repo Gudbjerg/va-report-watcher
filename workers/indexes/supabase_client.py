@@ -76,8 +76,17 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
     normalized_payload = []
     for row in raw_payload:
         r = dict(row)
-        if "avg_vol_30d" in r and "avg_daily_volume" not in r:
-            r["avg_daily_volume"] = r["avg_vol_30d"]
+        # Prefer explicit daily volume in shares; support millions-based alias
+        if "avg_daily_volume" not in r:
+            if "avg_vol_30d" in r:
+                r["avg_daily_volume"] = r["avg_vol_30d"]
+            elif "avg_vol_30d_millions" in r:
+                # Convert millions to shares (big number)
+                try:
+                    r["avg_daily_volume"] = float(
+                        r.get("avg_vol_30d_millions", 0.0)) * 1_000_000.0
+                except Exception:
+                    r["avg_daily_volume"] = None
         r.pop("avg_vol_30d", None)
         r.pop("issuer", None)
         r.pop("region", None)

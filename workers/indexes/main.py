@@ -40,7 +40,7 @@ def run_update() -> None:
         aum_val = float(args.aum)
     except Exception:
         aum_val = 0.0
-    if args.quarterly and aum_val > 0:
+    if args.quarterly:
         from index_calcs import build_quarterly_proforma
         df_pro = build_quarterly_proforma(
             df_raw, as_of=as_of, index_id=args.index_id, region=args.region, aum_ccy=aum_val)

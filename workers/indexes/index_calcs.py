@@ -26,11 +26,13 @@ def _normalize_input(df: pd.DataFrame) -> pd.DataFrame:
     d["shares"] = pd.to_numeric(d["shares"], errors="coerce").fillna(0.0)
     d["shares_capped"] = pd.to_numeric(
         d.get("shares_capped", 0.0), errors="coerce").fillna(0.0)
-    # Use average daily volume in millions when provided
+    # Average daily volume: source is in millions; convert to shares
     vol_source = "avg_vol_30d_millions" if "avg_vol_30d_millions" in d.columns else (
         "avg_vol_30d" if "avg_vol_30d" in d.columns else "avg_30d_volume")
     d["avg_vol_30d_millions"] = pd.to_numeric(
         d.get(vol_source, 0.0), errors="coerce").fillna(0.0)
+    # Big number in shares for calculations
+    d["avg_vol_30d"] = d["avg_vol_30d_millions"] * 1_000_000.0
     d["mcap_uncapped"] = d["shares"] * d["price"]
     d["mcap_capped"] = d["shares_capped"] * d["price"]
 
@@ -175,6 +177,11 @@ def build_status(df_raw: pd.DataFrame, as_of: date, index_id: str, region: str, 
     out["weight"] = out["weight"].astype("float64")
     out["capped_weight"] = out["capped_weight"].astype("float64")
     out["region"] = (region or "").upper()
+    # Round key numeric columns to two decimals for table display
+    for c in ("price", "shares", "shares_capped", "weight", "capped_weight", "avg_vol_30d"):
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+            out[c] = out[c].round(2)
     cols = [
         "index_id", "ticker", "issuer", "name", "price", "shares", "shares_capped",
         "mcap", "mcap_uncapped", "mcap_capped", "weight", "capped_weight", "avg_vol_30d", "as_of", "region",
@@ -186,6 +193,11 @@ def build_quarterly_proforma(df_raw: pd.DataFrame, as_of: date, index_id: str, r
     d = _normalize_input(df_raw)
     params = _params_for_region(region)
     params["region"] = (region or "CPH").upper()
+    # Region-default AUMs (big-number currency units)
+    region_upper = params["region"]
+    default_aum = 110_000_000_000.0 if region_upper == "CPH" else (
+        22_000_000_000.0 if region_upper == "HEL" else float(aum_ccy or 0.0))
+    aum = float(aum_ccy) if aum_ccy else default_aum
     issuers, _ = _compute_issuer_mcaps(d)
     final_issuer_w = _apply_quarterly_exceptions(issuers, params)
     dd = _distribute_to_constituents(d, final_issuer_w)
@@ -210,22 +222,32 @@ def build_quarterly_proforma(df_raw: pd.DataFrame, as_of: date, index_id: str, r
         "ticker"), on="ticker")
     # Delta should reflect movement from current CAPPED weight to target weight
     out["delta_pct"] = (out["weight"] - out["curr_weight_capped"])
-    out["delta_ccy"] = out["delta_pct"] * float(aum_ccy or 0.0)
-    # Convert millions to actual shares for delta volume
+    out["delta_ccy"] = out["delta_pct"] * aum
+    # Correct methodology:
+    # delta_vol_millions = (delta_ccy / price) converted to millions of shares
     out["delta_vol"] = out.apply(lambda r: (
-        (r["delta_ccy"] / (r["avg_vol_30d_millions"] * 1_000_000)) if r.get("avg_vol_30d_millions", 0.0) else 0.0), axis=1)
-    # Use absolute Days to Cover for clarity
+        (((r["delta_ccy"] / r["price"]) / 1_000_000.0) if r.get("price", 0.0) else 0.0)), axis=1)
+    # DTC = abs(delta_vol_millions) / avg_vol_30d_millions
     out["days_to_cover"] = out.apply(lambda r: (
-        abs((r["delta_vol"] / r["price"])) if r["price"] else 0.0), axis=1)
+        (abs(r["delta_vol"]) / (r["avg_vol_30d_millions"] if r.get("avg_vol_30d_millions", 0.0) else 1.0))), axis=1)
     out["index_id"] = index_id
     as_of_dt = datetime.combine(
         as_of, datetime.min.time(), tzinfo=timezone.utc)
     out["as_of"] = as_of_dt.isoformat()
     out["region"] = (region or "").upper()
+    # Round numeric columns: weights to 4 decimals, others to 2
+    for c in ("price", "shares", "shares_capped", "delta_ccy", "delta_vol", "days_to_cover", "avg_vol_30d", "avg_vol_30d_millions"):
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+            out[c] = out[c].round(2)
+    for c in ("curr_weight_uncapped", "curr_weight_capped", "weight", "capped_weight", "delta_pct"):
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+            out[c] = out[c].round(4)
     cols = [
         "index_id", "ticker", "issuer", "name", "price", "shares", "shares_capped",
         "mcap_uncapped", "mcap_capped", "curr_weight_uncapped", "curr_weight_capped", "weight", "capped_weight",
-        "delta_pct", "delta_ccy", "delta_vol", "days_to_cover", "avg_vol_30d_millions", "as_of", "region",
+        "delta_pct", "delta_ccy", "delta_vol", "days_to_cover", "avg_vol_30d", "as_of", "region",
     ]
     # Sort by largest uncapped mcap for preview consistency
     out_sorted = out.sort_values("mcap_uncapped", ascending=False)
