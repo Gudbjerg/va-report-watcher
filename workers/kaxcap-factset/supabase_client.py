@@ -107,13 +107,14 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
 
     insert_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
     # No query params needed; headers carry auth + Prefer resolution
-    insert_params = {}
 
     def _do_insert(rows):
+        if os.environ.get("DEBUG_SUPABASE"):
+            print(
+                f"[debug] POST {insert_url} (no query params), rows={len(rows)}")
         return requests.post(
             insert_url,
             headers=headers,
-            params=insert_params,
             data=json.dumps(rows),
         )
 
