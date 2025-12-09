@@ -235,6 +235,114 @@ function renderFooter() {
       </footer>
     `;
 }
+// Server-side helpers and routes for index pages
+function renderIndexTable(title, rows, columns) {
+  const headers = columns.map((c) => '<th class="px-3 py-2 text-left text-xs font-semibold text-slate-600">' + c.label + '</th>').join('');
+  const body = rows.map((r) => {
+    const tds = columns.map((c) => {
+      const raw = r[c.key];
+      const val = c.format ? c.format(raw, r) : (raw != null ? raw : '—');
+      return '<td class="px-3 py-2 text-sm">' + val + '</td>';
+    }).join('');
+    return '<tr class="border-t">' + tds + '</tr>';
+  }).join('');
+  return [
+    '<section class="max-w-6xl mx-auto px-6 py-8">',
+    '<h2 class="text-xl font-bold mb-3">' + title + '</h2>',
+    '<div class="bg-white rounded-xl shadow overflow-x-auto">',
+    '<table class="min-w-full">',
+    '<thead class="bg-slate-50"><tr>' + headers + '</tr></thead>',
+    '<tbody>' + body + '</tbody>',
+    '</table>',
+    '</div>',
+    '</section>'
+  ].join('');
+}
+
+async function fetchIndexRows(indexId) {
+  const table = tableForIndex(indexId);
+  const { data, error } = await supabase
+    .from(table)
+    .select('*')
+    .order('as_of', { ascending: false })
+    .limit(5000);
+  if (error) throw error;
+  return data || [];
+}
+
+function rankBy(rows, key, desc = true) {
+  return [...rows].sort((a, b) => {
+    const av = Number(a[key] || 0);
+    const bv = Number(b[key] || 0);
+    return desc ? (bv - av) : (av - bv);
+  });
+}
+
+app.get('/kaxcap', async (req, res) => {
+  try {
+    const rows = await fetchIndexRows('KAXCAP');
+    // Rank by uncapped mcap and show Top 25
+    const ranked = rankBy(rows, 'mcap_uncapped', true).slice(0, 25);
+    const cols = [
+      { key: 'ticker', label: 'Ticker' },
+      { key: 'name', label: 'Name' },
+      { key: 'mcap_uncapped', label: 'Mcap (uncapped)', format: (v) => Number(v || 0).toLocaleString() },
+      { key: 'curr_weight_uncapped', label: 'Current Uncapped', format: (v) => (Number(v || 0) * 100).toFixed(3) + '%' },
+      { key: 'curr_weight_capped', label: 'Current Capped', format: (v) => (Number(v || 0) * 100).toFixed(3) + '%' },
+      { key: 'weight', label: 'Proforma Weight', format: (v) => (Number(v || 0) * 100).toFixed(3) + '%' },
+      { key: 'delta_pct', label: 'Delta (vs capped)', format: (v) => (Number(v || 0) * 100).toFixed(3) + '%' },
+      { key: 'days_to_cover', label: 'Days to Cover', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+    ];
+    const html = ['<!doctype html><html><head>', renderHead('KAXCAP — Daily Status (Top 25 Uncapped Order)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('KAXCAP — Daily Status (Top 25 Uncapped Order)', ranked, cols), renderFooter(), '</body></html>'].join('');
+    res.send(html);
+  } catch (e) {
+    res.status(500).send(String(e && e.message ? e.message : e));
+  }
+});
+
+app.get('/hel', async (req, res) => {
+  try {
+    const rows = await fetchIndexRows(process.env.HEL_INDEX_ID || 'HELXCAP');
+    const ranked = rankBy(rows, 'mcap_uncapped', true).slice(0, 25);
+    const cols = [
+      { key: 'ticker', label: 'Ticker' },
+      { key: 'name', label: 'Name' },
+      { key: 'mcap_uncapped', label: 'Mcap (uncapped)', format: (v) => Number(v || 0).toLocaleString() },
+      { key: 'curr_weight_uncapped', label: 'Current Uncapped', format: (v) => (Number(v || 0) * 100).toFixed(3) + '%' },
+      { key: 'curr_weight_capped', label: 'Current Capped', format: (v) => (Number(v || 0) * 100).toFixed(3) + '%' },
+      { key: 'weight', label: 'Proforma Weight', format: (v) => (Number(v || 0) * 100).toFixed(3) + '%' },
+      { key: 'delta_pct', label: 'Delta (vs capped)', format: (v) => (Number(v || 0) * 100).toFixed(3) + '%' },
+      { key: 'days_to_cover', label: 'Days to Cover', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+    ];
+    const html = ['<!doctype html><html><head>', renderHead('HEL — Daily Status (Top 25 Uncapped Order)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('HEL — Daily Status (Top 25 Uncapped Order)', ranked, cols), renderFooter(), '</body></html>'].join('');
+    res.send(html);
+  } catch (e) {
+    res.status(500).send(String(e && e.message ? e.message : e));
+  }
+});
+
+app.get('/product/rebalancer', async (req, res) => {
+  try {
+    const rows = await fetchIndexRows('KAXCAP');
+    const cols = [
+      { key: 'ticker', label: 'Ticker' },
+      { key: 'name', label: 'Name' },
+      { key: 'price', label: 'Price', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 4 }) },
+      { key: 'shares', label: 'Shares', format: (v) => Number(v || 0).toLocaleString() },
+      { key: 'mcap_uncapped', label: 'Uncapped Mcap', format: (v) => Number(v || 0).toLocaleString() },
+      { key: 'weight', label: 'Target Weight', format: (v) => (Number(v || 0) * 100).toFixed(3) + '%' },
+      { key: 'capped_weight', label: 'Capped Weight', format: (v) => (Number(v || 0) * 100).toFixed(3) + '%' },
+      { key: 'delta_pct', label: 'Delta %', format: (v) => (Number(v || 0) * 100).toFixed(3) + '%' },
+      { key: 'delta_ccy', label: 'Delta CCY', format: (v) => Number(v || 0).toLocaleString() },
+      { key: 'days_to_cover', label: 'Days to Cover', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+    ];
+    const ranked = rankBy(rows, 'mcap_uncapped', true).slice(0, 300);
+    const html = ['<!doctype html><html><head>', renderHead('Index Rebalancer'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('Index Rebalancer — Methodology Table', ranked, cols), renderFooter(), '</body></html>'].join('');
+    res.send(html);
+  } catch (e) {
+    res.status(500).send(String(e && e.message ? e.message : e));
+  }
+});
 // Helper: render the dashboard HTML for a given project name
 async function renderDashboard(project = 'Universal') {
   // Ensure in-memory state is populated from DB if empty
@@ -482,7 +590,7 @@ app.get('/api/kaxcap/status', getLatestKaxcapStatus);
 // Trigger the KAXCAP FactSet Python worker manually
 app.post('/api/kaxcap/run', (req, res) => {
   try {
-    const scriptPath = path.join(__dirname, 'workers', 'kaxcap-factset', 'main.py');
+    const scriptPath = path.join(__dirname, 'workers', 'indexes', 'main.py');
     const pythonCmd = process.env.PYTHON || 'python3';
     const args = [scriptPath];
     const { region, indexId, asOf, quarterly } = Object.assign({}, req.query, req.body);
@@ -612,21 +720,6 @@ app.get('/index', async (req, res) => {
             let selected = 'KAXCAP';
             const btns = Array.from(document.querySelectorAll('button[data-idx]'));
             const refreshBtn = document.getElementById('refreshBtn');
-            const helId = '${process.env.HEL_INDEX_ID || 'HELXCAP'}';
-            const stoId = '${process.env.STO_INDEX_ID || 'OMXSALLS'}';
-            const regionFor = (id) => (id === stoId) ? 'STO' : (id === helId) ? 'HEL' : 'CPH';
-            const aumByRegion = {
-              CPH: Number('${process.env.KAXCAP_AUM_DKK || '110000000000'}') || 110000000000,
-              HEL: Number('${process.env.HEL_AUM_EUR || '22000000000'}') || 22000000000,
-              STO: Number('${process.env.STO_AUM_SEK || '650000000000'}') || 650000000000
-            };
-            const currencyByRegion = { CPH: 'DKK', HEL: 'EUR', STO: 'SEK' };
-
-            btns.forEach(b => b.addEventListener('click', () => { selected = b.getAttribute('data-idx'); loadAll(); }));
-            refreshBtn.addEventListener('click', async () => {
-              try {
-                const region = regionFor(selected);
-                const r = await fetch('/api/kaxcap/run?region=' + region + '&indexId=' + selected, { method: 'POST' });
                 const json = await r.json();
                 document.getElementById('meta').textContent = 'Refresh triggered for ' + selected + (json.ok ? ' — OK' : (' — Error: ' + (json.error || 'unknown')));
                 setTimeout(loadAll, 1200);
@@ -1463,7 +1556,7 @@ app.listen(PORT, () => {
   (async () => {
     try {
       const pythonCmd = process.env.PYTHON || 'python3';
-      const scriptPath = path.join(__dirname, 'workers', 'kaxcap-factset', 'main.py');
+      const scriptPath = path.join(__dirname, 'workers', 'indexes', 'main.py');
       const runs = [
         { region: 'CPH', indexId: process.env.CPH_INDEX_ID || 'KAXCAP' },
         { region: 'HEL', indexId: process.env.HEL_INDEX_ID || 'HELXCAP' },
@@ -1524,7 +1617,7 @@ try {
     // Trigger FactSet worker for all markets (daily)
     try {
       const pythonCmd = process.env.PYTHON || 'python3';
-      const scriptPath = path.join(__dirname, 'workers', 'kaxcap-factset', 'main.py');
+      const scriptPath = path.join(__dirname, 'workers', 'indexes', 'main.py');
       const runs = [
         { region: 'CPH', indexId: process.env.CPH_INDEX_ID || 'KAXCAP' },
         { region: 'HEL', indexId: process.env.HEL_INDEX_ID || 'HELXCAP' },
