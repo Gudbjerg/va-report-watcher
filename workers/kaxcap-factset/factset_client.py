@@ -98,6 +98,8 @@ def fetch_kaxcap_raw(region: str = 'CPH') -> pd.DataFrame:
                             "formulas": f["formulas"], "flatten": f["flatten"]}}
         r = requests.post(FACTSET_FORMULA_URL, auth=(
             FACTSET_USERNAME, FACTSET_API_KEY), headers=headers, json=payload, verify=True)
+        print("[supabase] status:", r.status_code)
+        print("[supabase] body:", r.text)
         r.raise_for_status()
         raw = r.json().get('data', [])
 
