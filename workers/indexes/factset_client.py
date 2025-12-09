@@ -224,8 +224,12 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
             df = df.merge(shares_df, on='ticker',
                           how='left', suffixes=('', '_sh'))
             for col in ('shares', 'shares_capped'):
-                if f'{col}_sh' in df.columns:
-                    df[col] = df[col].combine_first(df[f'{col}_sh'])
+                sh_col = f'{col}_sh'
+                if sh_col in df.columns:
+                    # Only combine when the right-hand column has any non-null values
+                    # This avoids a pandas FutureWarning about concatenation with empty entries
+                    if df[sh_col].notna().any():
+                        df[col] = df[col].combine_first(df[sh_col])
             # Drop helper columns
             drop_cols = [c for c in df.columns if c.endswith('_sh')]
             if drop_cols:
