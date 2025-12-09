@@ -385,11 +385,13 @@ async function renderDashboard(project = 'Universal') {
   return `<!doctype html>
   <html lang="en">
     <head>
-      ${renderHead(project + ' — Watcher Status')}
+  const kaxcap = await fetchIndexRows('KAXCAP');
+  const helxcap = await fetchIndexRows(process.env.HEL_INDEX_ID || 'HELXCAP');
+  const omxsalls = await fetchIndexRows(process.env.STO_INDEX_ID || 'OMXSALLS');
+
       <style>/* small helper to make posted meme images scale */
         .meme-img{width:100%;height:auto;object-fit:cover;border-radius:8px}
         .meme-img{max-height:400px;}
-        /* collapsed state hides the large image/form but leaves the card visible */
         .meme-collapsed .meme-area, .meme-collapsed #memeFormWrapper { display: none; }
         .recent-thumb{width:56px;height:56px;object-fit:cover;border-radius:6px;border:1px solid rgba(255,255,255,0.08)}
       </style>
@@ -397,7 +399,11 @@ async function renderDashboard(project = 'Universal') {
     <body class="bg-gray-50 text-gray-800 font-sans">
       ${renderHeader()}
 
-      <section class="bg-gradient-to-r from-slate-900 to-slate-800 text-white">
+  const html = ['<!doctype html><html><head>', renderHead('Index Rebalancer'), '</head><body class="bg-gray-50">', renderHeader(),
+    renderIndexTable('KAXCAP — Proforma', kaxcap, cols),
+    renderIndexTable('HELXCAP — Proforma', helxcap, cols),
+    renderIndexTable('OMXSALLS — Proforma', omxsalls, cols),
+    renderFooter(), '</body></html>'].join('');
         <div class="max-w-6xl mx-auto px-6 py-16 grid grid-cols-1 md:grid-cols-3 gap-8 items-center">
           <div class="md:col-span-2">
             <div class="mb-6 text-sm text-yellow-300 uppercase tracking-wide">Powered by ABG Sundal Collier</div>

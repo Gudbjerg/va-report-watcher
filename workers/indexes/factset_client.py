@@ -252,8 +252,8 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
     elif 'avg_30d_volume' in df.columns:
         df['avg_vol_30d_millions'] = df['avg_30d_volume']
 
-        cols = ['ticker', 'issuer', 'name', 'price', 'shares',
-                'shares_capped', 'omx_weight', 'omx_weight_capped', 'avg_vol_30d_millions', 'mcap', 'region']
+    cols = ['ticker', 'issuer', 'name', 'price', 'shares',
+            'shares_capped', 'omx_weight', 'omx_weight_capped', 'avg_vol_30d_millions', 'mcap', 'region']
     for c in cols:
         if c not in df.columns:
             df[c] = None
