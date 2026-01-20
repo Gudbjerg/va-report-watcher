@@ -1062,9 +1062,11 @@ app.get('/index', async (req, res) => {
                 // Build lookups from daily cache
                 // - ticker -> display name
                 // - ticker -> ADV (millions)
+                // - ticker -> Price (spot)
                 // - companyKey -> Market Cap (bn) aggregated
                 const nameByTicker = new Map();
                 const advByTickerMillions = new Map();
+                const priceByTicker = new Map();
                 const mcapBnByCompanyKey = new Map();
                 try {
                   (dailyRowsCache || []).forEach(dr => {
@@ -1074,6 +1076,9 @@ app.get('/index', async (req, res) => {
                     nameByTicker.set(tk, stripClassDesignators(nm));
                     const adv = (dr.avg_daily_volume != null ? Number(dr.avg_daily_volume) : null);
                     advByTickerMillions.set(tk, (adv != null ? (adv/1e6) : null));
+                    if (dr.price != null && !Number.isNaN(Number(dr.price))) {
+                      priceByTicker.set(tk, Number(dr.price));
+                    }
                     const ck = companyKeyFrom(dr);
                     const mcapRaw = (dr.market_cap != null ? Number(dr.market_cap) : (dr.mcap != null ? Number(dr.mcap) : null));
                     if (mcapRaw != null && !Number.isNaN(mcapRaw)) {
@@ -1090,8 +1095,11 @@ app.get('/index', async (req, res) => {
                   const newW = (row.new_weight != null) ? Number(row.new_weight) : null;
                   const deltaFrac = (currW != null && newW != null) ? (newW - currW) : null;
                   const deltaAmt = (aum && deltaFrac != null) ? (aum * deltaFrac) : null;
+                  const tkUp = (row.ticker || '').toString().toUpperCase();
+                  const priceVal = (!row.__multi ? (priceByTicker.get(tkUp) ?? (row.price!=null? Number(row.price): null)) : null);
                   if (quarterlySort.key==='issuer') return issuer;
                   if (quarterlySort.key==='mcap') return mcap;
+                  if (quarterlySort.key==='price') return priceVal;
                   if (quarterlySort.key==='curr') return currW;
                   if (quarterlySort.key==='new') return newW;
                   if (quarterlySort.key==='delta_pct') return deltaFrac;
@@ -1113,6 +1121,7 @@ app.get('/index', async (req, res) => {
                     r.mcap != null && Number(r.mcap) > 0 ? (Number(r.mcap) / 1e9) : (
                       r.mcap_uncapped != null && Number(r.mcap_uncapped) > 0 ? (Number(r.mcap_uncapped) / 1e9) : (mcapBnByCompanyKey.get(cKey) ?? null)))
                   );
+                  const price = (!r.__multi ? (priceByTicker.get(tkUp) ?? (r.price!=null? Number(r.price): null)) : null);
                   const currW = (typeof r.old_weight==='number') ? Number(r.old_weight) : null; // decimal fraction
                   const newW = (typeof r.new_weight==='number') ? Number(r.new_weight) : null; // decimal fraction
                   const deltaFrac = (currW != null && newW != null) ? (newW - currW) : null;
@@ -1130,6 +1139,7 @@ app.get('/index', async (req, res) => {
                   return '<tr class="border-b">'
                     + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + issuer + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (mcapBn != null && mcapBn>0 ? mcapBn.toFixed(2) : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm text-right">' + (price != null ? price.toFixed(2) : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right" title="' + (currWPct!=null? currWPct.toFixed(2)+'%':'') + '">' + (currWPct != null ? currWPct.toFixed(2) + '%' : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right" title="' + (newWPct!=null? newWPct.toFixed(2)+'%':'') + '">' + (newWPct != null ? newWPct.toFixed(2) + '%' : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right ' + deltaClass + '">' + (deltaPct != null ? deltaPct.toFixed(2) + '%' : '') + '</td>'
@@ -1141,6 +1151,7 @@ app.get('/index', async (req, res) => {
                 const header = '<tr>'
                   + '<th class="px-3 py-2 sticky left-0 bg-gray-100 cursor-pointer" data-qsort="issuer">Company Name</th>'
                   + '<th class="px-3 py-2 text-right cursor-pointer" data-qsort="mcap">Market Cap, bn</th>'
+                  + '<th class="px-3 py-2 text-right cursor-pointer" data-qsort="price">Price</th>'
                   + '<th class="px-3 py-2 text-right cursor-pointer" data-qsort="curr">Current</th>'
                   + '<th class="px-3 py-2 text-right cursor-pointer" data-qsort="new">Proforma</th>'
                   + '<th class="px-3 py-2 text-right cursor-pointer" data-qsort="delta_pct">Delta, %</th>'
@@ -1153,17 +1164,18 @@ app.get('/index', async (req, res) => {
                   + '<button id="qTop50" class="px-2 py-1 border rounded text-xs">Show 50</button>'
                   + '<button id="quarterlyCsv" class="px-2 py-1 border rounded text-xs">Export CSV</button>'
                   + '</div>';
-                document.getElementById('quarterlyTable').innerHTML = qControls + '<div class="overflow-auto"><table class="w-full text-left"><thead class="bg-gray-100">' + header + '</thead><tbody>' + (trs || '<tr><td class="px-3 py-4 text-sm text-slate-500" colspan="8">No data.</td></tr>') + '</tbody></table></div>';
+                document.getElementById('quarterlyTable').innerHTML = qControls + '<div class="overflow-auto"><table class="w-full text-left"><thead class="bg-gray-100">' + header + '</thead><tbody>' + (trs || '<tr><td class="px-3 py-4 text-sm text-slate-500" colspan="9">No data.</td></tr>') + '</tbody></table></div>';
                 // Quarterly control handlers
                 document.getElementById('qTop15').onclick = ()=>{ quarterlyLimit=15; loadQuarterly(); };
                 document.getElementById('qTop50').onclick = ()=>{ quarterlyLimit=50; loadQuarterly(); };
                 document.getElementById('quarterlyCsv').onclick = ()=>{
                   try {
-                    const header = ['issuer','mcap_bn','curr_weight_pct','proforma_weight_pct','delta_pct','delta_amt','delta_vol','dtc'];
+                    const header = ['issuer','mcap_bn','price','curr_weight_pct','proforma_weight_pct','delta_pct','delta_amt','delta_vol','dtc'];
                     const csv = [header.join(',')].concat(top.map(r=>{
                       const tkUp = (r.ticker || '').toString().toUpperCase();
                       const issuer = (nameByTicker.get(tkUp) || r.name || r.issuer || r.ticker || '');
                       const mcapBn = (r.mcap_bn != null) ? Number(r.mcap_bn) : (r.mcap != null ? (Number(r.mcap) / 1e9) : (r.mcap_uncapped != null ? (Number(r.mcap_uncapped) / 1e9) : ''));
+                      const price = (!r.__multi ? (priceByTicker.get(tkUp) ?? (r.price!=null? Number(r.price): '')) : '');
                       const currW = (r.old_weight != null) ? Number(r.old_weight) : null;
                       const newW = (r.new_weight != null) ? Number(r.new_weight) : null;
                       const deltaFrac = (currW != null && newW != null) ? (newW - currW) : null;
@@ -1174,7 +1186,7 @@ app.get('/index', async (req, res) => {
                       const deltaVol = (r.delta_vol != null) ? Number(r.delta_vol).toFixed(2) : '';
                       const advM = advByTickerMillions.get(tkUp);
                       const dtc = (advM!=null && advM>0 && r.delta_vol!=null) ? (Math.abs(Number(r.delta_vol))/advM).toFixed(2) : ((r.days_to_cover != null) ? Number(r.days_to_cover).toFixed(2) : '');
-                      return [JSON.stringify(issuer), mcapBn, currWPct, newWPct, deltaPct, deltaAmt, deltaVol, dtc].join(',');
+                      return [JSON.stringify(issuer), mcapBn, price, currWPct, newWPct, deltaPct, deltaAmt, deltaVol, dtc].join(',');
                     })).join('\\n');
                     const blob = new Blob([csv], {type:'text/csv'});
                     const url = URL.createObjectURL(blob);
