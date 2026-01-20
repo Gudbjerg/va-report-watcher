@@ -885,9 +885,18 @@ app.get('/index', async (req, res) => {
                 .replace(/\s{2,}/g,' ').trim();
             }
             function companyKeyFrom(row){
-              const nm = row.name || row.issuer || row.ticker || '';
-              const base = stripClassDesignators(nm).toLowerCase();
-              return base;
+              const nmName = row.name || row.issuer || '';
+              if (nmName) {
+                return stripClassDesignators(nmName).toLowerCase();
+              }
+              const tk = String(row.ticker || '');
+              if (tk) {
+                // Derive issuer key from ticker like MAERSK.A-CSE or NOVO.B-CSE → 'maersk' / 'novo'
+                const preDash = tk.split('-')[0];
+                const noClass = preDash.replace(/\.[A-Z](?=-|$)/, '').replace(/\.[A-Z]$/, '');
+                return noClass.replace(/\./g,'').toLowerCase();
+              }
+              return stripClassDesignators(String(row.ticker || '')).toLowerCase();
             }
             function groupByCompanyDaily(rows){
               const map = new Map();
@@ -907,6 +916,10 @@ app.get('/index', async (req, res) => {
                 if (entry.__rows.length===1){ entry.price = (r.price!=null? Number(r.price):null); entry.avg_daily_volume = (r.avg_daily_volume!=null? Number(r.avg_daily_volume):null); }
                 if (r.flags) entry.flagsSet.add(String(r.flags));
                 extractClasses(nm).forEach(c=>entry.__classes.add(c));
+                // Also infer class from ticker patterns like MAERSK.A-CSE
+                const tk = String(r.ticker||'');
+                const m1 = tk.match(/\.([A-Z])(?=-|$)/);
+                if (m1 && m1[1]) entry.__classes.add(String(m1[1]).toUpperCase());
                 if (!entry.ticker) entry.ticker = r.ticker || null;
                 map.set(key, entry);
               }
@@ -958,6 +971,9 @@ app.get('/index', async (req, res) => {
                 entry.delta_pct += (typeof r.delta_pct==='number'? Number(r.delta_pct):0);
                 if (r.flags) entry.flagsSet.add(String(r.flags));
                 extractClasses(nm).forEach(c=>entry.__classes.add(c));
+                const tk = String(r.ticker||'');
+                const m1 = tk.match(/\.([A-Z])(?=-|$)/);
+                if (m1 && m1[1]) entry.__classes.add(String(m1[1]).toUpperCase());
                 map.set(key, entry);
               }
               const out = [];
