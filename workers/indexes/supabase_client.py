@@ -28,9 +28,11 @@ WHITELIST_COLUMNS = {
     "mcap",
     "weight",
     "capped_weight",
+    "delta_pct",
     "avg_daily_volume",
     "as_of",
     "source",
+    "flags",
 }
 
 

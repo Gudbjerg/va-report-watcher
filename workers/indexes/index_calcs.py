@@ -152,13 +152,9 @@ def _distribute_to_constituents(d: pd.DataFrame, final_issuer_w: Dict[str, float
         (r["mcap_capped"] / r["issuer_mcap_capped"]) if r.get("issuer_mcap_capped") else 0.0), axis=1)
     d["weight"] = d.apply(lambda r: (final_issuer_w.get(
         r["issuer"], 0.0) * r["issuer_share_uncapped"]), axis=1)
-    # If API provided current capped weights, prefer them for capped_weight; else compute pro-rata
-    if "omx_weight_capped" in d.columns:
-        d["capped_weight"] = pd.to_numeric(
-            d["omx_weight_capped"], errors="coerce").fillna(0.0)
-    else:
-        d["capped_weight"] = d.apply(lambda r: (final_issuer_w.get(
-            r["issuer"], 0.0) * r["issuer_share_capped"]), axis=1)
+    # Proposed capped weight for distribution based on final issuer weights
+    d["capped_weight"] = d.apply(lambda r: (final_issuer_w.get(
+        r["issuer"], 0.0) * r["issuer_share_capped"]), axis=1)
     return d
 
 
@@ -170,6 +166,21 @@ def build_status(df_raw: pd.DataFrame, as_of: date, index_id: str, region: str, 
     final_issuer_w = _apply_quarterly_exceptions(
         issuers, params) if quarterly else _apply_daily_capping(issuers, params)
     out = _distribute_to_constituents(d, final_issuer_w)
+
+    # Current capped weights (from API if available; else from mcap_capped)
+    total_mcap_capped = (d["mcap_capped"].sum() or 1.0)
+    if "omx_weight_capped" in d.columns:
+        d["curr_weight_capped"] = (pd.to_numeric(
+            d["omx_weight_capped"], errors="coerce").fillna(0.0) / 100.0)
+    else:
+        d["curr_weight_capped"] = d["mcap_capped"] / total_mcap_capped
+    # Attach current capped to output to compute delta
+    out = out.join(d[["ticker", "curr_weight_capped"]
+                     ].set_index("ticker"), on="ticker")
+    # Delta = proposed capped_weight - current capped weight
+    out["delta_pct"] = pd.to_numeric(out.get("capped_weight", 0.0), errors="coerce").fillna(
+        0.0) - pd.to_numeric(out.get("curr_weight_capped", 0.0), errors="coerce").fillna(0.0)
+
     out["index_id"] = index_id
     as_of_dt = datetime.combine(
         as_of, datetime.min.time(), tzinfo=timezone.utc)
@@ -177,14 +188,59 @@ def build_status(df_raw: pd.DataFrame, as_of: date, index_id: str, region: str, 
     out["weight"] = out["weight"].astype("float64")
     out["capped_weight"] = out["capped_weight"].astype("float64")
     out["region"] = (region or "").upper()
-    # Round key numeric columns to two decimals for table display
-    for c in ("price", "shares", "shares_capped", "weight", "capped_weight", "avg_vol_30d"):
+    # Round key numeric columns: price/shares to 2 decimals; weights to 4 decimals
+    for c in ("price", "shares", "shares_capped", "avg_vol_30d"):
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
             out[c] = out[c].round(2)
+    for c in ("weight", "capped_weight"):
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+            out[c] = out[c].round(4)
+
+    # Derive issuer-level flags for daily rule breaches (10% and 40% aggregate >5%)
+    issuers_flags: Dict[str, str] = {}
+    try:
+        init_map = {row["issuer"]: float(row["initWeight_uncapped"]) for _, row in issuers[[
+            "issuer", "initWeight_uncapped"]].iterrows()}
+        exc = params.get("exceptionCap", 0.07 if params.get(
+            "region", "CPH").upper() in ("CPH", "HEL") else 0.09)
+        # Current capped weights per issuer
+        d_curr = d.assign(issuer=d.get(
+            "issuer", d.get("name", "").str.upper()))
+        curr_by_issuer = d_curr.groupby("issuer", as_index=False)[
+            "curr_weight_capped"].sum()
+        # 10% breach flag (init uncapped > 10%)
+        for _, row in curr_by_issuer.iterrows():
+            issuer = row["issuer"]
+            curr_w = float(row["curr_weight_capped"])
+            init_w = float(init_map.get(issuer, 0.0))
+            if init_w > 0.10 and curr_w > exc + 1e-9:
+                issuers_flags[issuer] = (issuers_flags.get(
+                    issuer, "") + (", " if issuers_flags.get(issuer) else "") + "10% breach")
+        # 40% aggregate >5% breach
+        over5 = [(row["issuer"], float(row["curr_weight_capped"]))
+                 for _, row in curr_by_issuer.iterrows() if float(row["curr_weight_capped"]) > 0.05]
+        agg = sum([w for _, w in over5])
+        if agg > 0.40 + 1e-9:
+            candidates = sorted(over5, key=lambda kv: kv[1])
+            chosen = None
+            for issuer, w in candidates:
+                if not (init_map.get(issuer, 0.0) > 0.10):
+                    chosen = issuer
+                    break
+            if chosen:
+                issuers_flags[chosen] = (issuers_flags.get(
+                    chosen, "") + (", " if issuers_flags.get(chosen) else "") + "40% breach — cut to 4.5%")
+    except Exception:
+        pass
+
+    # Attach flags to each constituent row based on issuer
+    out["flags"] = out.apply(
+        lambda r: issuers_flags.get(r.get("issuer"), ""), axis=1)
     cols = [
         "index_id", "ticker", "issuer", "name", "price", "shares", "shares_capped",
-        "mcap", "mcap_uncapped", "mcap_capped", "weight", "capped_weight", "avg_vol_30d", "as_of", "region",
+        "mcap", "mcap_uncapped", "mcap_capped", "weight", "capped_weight", "delta_pct", "avg_vol_30d", "as_of", "region", "flags",
     ]
     return out[cols].copy()
 

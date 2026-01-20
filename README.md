@@ -281,13 +281,50 @@ Main project folder containing backend and frontend components.
       - Use the seed script to insert mock rows (since FactSet calls won’t work locally without allowlisted IPs):
         - `node scripts/seed-index.js`
         - Then open `/index` to verify Quarterly + Daily tables render.
-    - Quarterly Proforma: uncapped All-Share → Nasdaq quarterly capping (CPH/HEL 7%, STO 9%, aggregate limit, iterative caps down to 4.5% for top bands up to top 15). Includes uncapped vs capped shares, AUM and derived volumes.
-    - Daily Status: current capped weights ranked (daily rules: aggregate of >5% ≤ 40%, issuers >10% at exception cap, iterative 4.5% caps).
+    - Quarterly Proforma: see Methodology below (uncapped ranking → assign exception caps and 4.5% cap, delta vs current capped, AUM-driven cash/volume/DTC).
+    - Daily Status: shows current capped ranking and rule tracking, including per-issuer flags, delta vs current capped, AUM-driven cash/volume/DTC.
     - Refresh button per index calls `/api/kaxcap/run?region=...&indexId=...` to trigger the Python worker.
 
   Data flow
   - Python worker (FactSet Formula) fetches, computes daily/quarterly, upserts to Supabase.
   - Node server reads latest snapshots and renders JSON + tables. If local IP isn’t allow‑listed for FactSet, pages show empty until Supabase has rows.
+
+---
+
+## 📐 Index Methodology (Daily vs Quarterly)
+
+Inputs
+- FactSet Formula API provides `price`, `shares`, `shares_capped`, `avg_vol_30d` (or variants), and optional `omx_weight`/`omx_weight_capped`.
+
+Caps and thresholds
+- Base cap: 4.5%.
+- Exception cap (10% rule): issuers with initial uncapped weight >10% are capped at 7% (CPH/HEL) or 9% (STO).
+- Aggregate (>5%) rule: sum of all issuers whose current capped weight exceeds 5% must be ≤ 40%.
+
+Quarterly (Proforma)
+- Ranking: by uncapped market cap (largest → smallest).
+- Assignment:
+  - Set exception cap (7% CPH/HEL, 9% STO) for top names as long as they warrant it by mass/rank.
+  - Allocate remaining proportionally subject to a 4.5% cap; iteratively cap violators until stable.
+- Delta: `proforma_weight − current_capped_weight`.
+- Cash/volume: `Delta (CCY) = AUM × Delta (fraction)`, `Shares = Delta (CCY)/price`, `DTC = abs(Shares)/avg_daily_volume`.
+- UI ordering: by `mcap_uncapped`.
+
+Daily (Status + Rule tracking)
+- Ranking: by current capped weight (this reflects the live index order).
+- Rule monitoring:
+  - 10% exception: if an issuer’s initial uncapped >10% and current capped > exception cap, it’s flagged as a 10% breach.
+  - 40% aggregate: if the sum of names with current capped >5% exceeds 40%, the smallest name in that set (excluding exception issuers) is the cut candidate to 4.5%.
+- Proposed weights: computed under daily rules; `delta = proposed_capped − current_capped`.
+- Cash/volume: computed as per Quarterly.
+- Flags: UI shows `10% breach` and/or `40% breach — cut to 4.5%`. If no explicit flag but a cap applies, UI shows `capped`.
+
+Defaults (AUM / currency)
+- CPH: 110bn DKK, HEL: 22bn EUR, STO: 450bn SEK. These drive `Delta (CCY)` and `DTC` in the UI; adjust in `index.js` if needed.
+
+API shapes
+- Daily: `/api/index/:indexId/constituents` (ordered by `capped_weight` desc).
+- Quarterly: `/api/index/:indexId/quarterly` (ordered by `mcap_uncapped` desc), maps current capped and target weights and includes derived deltas.
 
   Supabase tables (expected)
   - Daily: `index_constituents` (index_id, ticker, name, price, shares, mcap, weight, avg_vol_30d, as_of; optional issuer, region, capped_weight).
