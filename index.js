@@ -872,7 +872,8 @@ app.get('/index', async (req, res) => {
             function extractClasses(name){
               const s = String(name||'');
               const out = new Set();
-              const regexes = [/(?:^|\s)(?:class|ser\.?|series)\s*([A-Z])(?![a-z])/ig, /\b([A-Z])\s*share\b/ig];
+              // Detect share-class markers like "Class A", "Cla B", "Series B", or "B share"
+              const regexes = [/(?:^|\s)(?:class|cla|ser\.?|series)\s*([A-Z])(?![a-z])/ig, /\b([A-Z])\s*share\b/ig];
               for (const re of regexes){
                 let m; while((m=re.exec(s))){ out.add(String(m[1]||'').toUpperCase()); }
               }
@@ -880,7 +881,7 @@ app.get('/index', async (req, res) => {
             }
             function stripClassDesignators(name){
               return String(name||'')
-                .replace(/\b(?:class|ser\.?|series)\s+[A-Z](?![a-z])/ig, '')
+                .replace(/\b(?:class|cla|ser\.?|series)\s+[A-Z](?![a-z])/ig, '')
                 .replace(/\s{2,}/g,' ').trim();
             }
             function companyKeyFrom(row){
