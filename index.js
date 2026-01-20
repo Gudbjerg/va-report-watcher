@@ -77,7 +77,7 @@ function discoverWatchers() {
         const mod = require(p);
         checkEsundhedFn = mod.checkEsundhedUpdate || mod;
         console.log('[loader] loaded Sundhedsdatabank watcher from', p);
-        discoveredWatchers.push({ key: 'esundhed', name: 'Sundhedsdatabank', path: p, route: '/scrape/esundhed' });
+        discoveredWatchers.push({ key: 'sundhedsdatabank', name: 'Sundhedsdatabank', path: p, route: '/scrape/sundhedsdatabank' });
         break;
       }
     }
@@ -97,16 +97,7 @@ function discoverWatchers() {
     }
   }
 
-  if (!checkEsundhedFn) {
-    try {
-      const esLegacy = require('./watchers/esundhed');
-      checkEsundhedFn = esLegacy.checkEsundhedUpdate || esLegacy;
-      console.log('[loader] falling back to ./watchers/esundhed');
-      discoveredWatchers.push({ key: 'esundhed', name: 'Sundhedsdatabank (legacy)', path: path.join(__dirname, 'watchers', 'esundhed.js'), route: '/scrape/esundhed' });
-    } catch (e) {
-      console.warn('[loader] no eSundhed legacy watcher available:', e && e.message ? e.message : e);
-    }
-  }
+  // No legacy fallback for Sundhedsdatabank; use project watcher only
 }
 // Map index_id to per-index table name; fallback to shared table
 function tableForIndex(indexId) {
@@ -197,6 +188,20 @@ function renderHead(title) {
         <title>${title}</title>
         <link rel="icon" type="image/png" href="/assets/favicon-32.png" />
         <script src="https://cdn.tailwindcss.com"></script>
+        <script>
+          // If Tailwind CDN fails (network/CSP), load a minimal local fallback
+          (function(){
+            function tailwindMissing(){
+              try { return !(window.tailwind && window.tailwind.config); } catch (e) { return true; }
+            }
+            if (tailwindMissing()) {
+              var link = document.createElement('link');
+              link.rel = 'stylesheet';
+              link.href = '/assets/tailwind-fallback.css';
+              document.head.appendChild(link);
+            }
+          })();
+        </script>
       `;
 }
 
@@ -642,10 +647,13 @@ app.get('/scrape/va', async (_, res) => {
   res.send('VA scrape complete!');
 });
 
-app.get('/scrape/esundhed', async (_, res) => {
+// New canonical route name
+app.get('/scrape/sundhedsdatabank', async (_, res) => {
   await updateEsundhed();
-  res.send('eSundhed scrape complete!');
+  res.send('Sundhedsdatabank scrape complete!');
 });
+// Soft fallback: keep old route but redirect for compatibility
+app.get('/scrape/esundhed', (req, res) => res.redirect(302, '/scrape/sundhedsdatabank'));
 
 app.get('/api/kaxcap/status', getLatestKaxcapStatus);
 
@@ -722,9 +730,15 @@ app.get('/api/index/:indexId/quarterly', async (req, res) => {
         .from(tableName)
         .select('*')
         .eq('as_of', asOf)
-        .order('new_weight', { ascending: false });
+        // Order by target weight. DB may not have `new_weight` column, so use `weight`.
+        .order('weight', { ascending: false });
       if (err2) throw err2;
-      rows = Array.isArray(data) ? data : [];
+      // Map to API shape expected by UI without forcing DB schema changes
+      rows = (Array.isArray(data) ? data : []).map(r => ({
+        ...r,
+        old_weight: (r.curr_weight_capped ?? r.curr_weight_uncapped ?? null),
+        new_weight: (typeof r.weight !== 'undefined' ? r.weight : null)
+      }));
     }
     res.json({ asOf, rows });
   } catch (e) {
@@ -772,6 +786,23 @@ app.get('/index', async (req, res) => {
             let selected = 'KAXCAP';
             const btns = Array.from(document.querySelectorAll('button[data-idx]'));
             const refreshBtn = document.getElementById('refreshBtn');
+            const currencyByRegion = { CPH: 'DKK', HEL: 'EUR', STO: 'SEK' };
+            const aumByRegion = { CPH: 110000000000, HEL: 22000000000, STO: 0 };
+            function regionFor(indexId){
+              const id = String(indexId||'').toUpperCase();
+              if(id==='KAXCAP' || id==='OMXCAPPGI') return 'CPH';
+              if(id==='$HEL_INDEX$' || id==='HELXCAP') return 'HEL';
+              if(id==='$STO_INDEX$' || id==='OMXSALLS') return 'STO';
+              return 'CPH';
+            }
+            // Select index via buttons
+            btns.forEach(btn => btn.addEventListener('click', () => { selected = btn.getAttribute('data-idx'); loadAll(); }));
+            // Trigger Python worker refresh for selected
+            refreshBtn?.addEventListener('click', async () => {
+              try {
+                const idx = selected;
+                const region = regionFor(idx);
+                const r = await fetch('/api/kaxcap/run?region=' + encodeURIComponent(region) + '&indexId=' + encodeURIComponent(idx), { method: 'POST' });
                 const json = await r.json();
                 document.getElementById('meta').textContent = 'Refresh triggered for ' + selected + (json.ok ? ' — OK' : (' — Error: ' + (json.error || 'unknown')));
                 setTimeout(loadAll, 1200);

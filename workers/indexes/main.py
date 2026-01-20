@@ -5,7 +5,7 @@ import os
 
 from factset_client import fetch_index_raw
 from index_calcs import build_status, _compute_issuer_mcaps, _apply_daily_capping, _distribute_to_constituents
-from supabase_client import upsert_index_constituents
+from supabase_client import upsert_index_constituents, upsert_index_quarterly
 
 
 def run_update() -> None:
@@ -44,6 +44,11 @@ def run_update() -> None:
         from index_calcs import build_quarterly_proforma
         df_pro = build_quarterly_proforma(
             df_raw, as_of=as_of, index_id=args.index_id, region=args.region, aum_ccy=aum_val)
+        # Persist quarterly snapshot
+        try:
+            upsert_index_quarterly(df_pro)
+        except Exception as e:
+            print("Quarterly upsert error:", e)
         try:
             # Daily status preview: apply daily capping weights and show top 10 by uncapped mcap
             try:

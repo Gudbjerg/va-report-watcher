@@ -2,7 +2,7 @@
 
 This repository now contains a small product suite of related services for monitoring, analyzing, and proposing changes to financial/healthcare data. The original watcher/scraper is still present, but the project scope has expanded to three products:
 
-1. Watchers (scrapers) — lightweight site-specific scrapers that detect and persist newly published reports (originally `va` and `Sundhedsdatabank`).
+1. Watchers (scrapers) — lightweight site-specific scrapers that detect and persist newly published reports (VA and Sundhedsdatabank).
 2. Index Rebalancer — pulls index constituent data (FactSet), computes rebalancing proposals, and stores proposals for review/execution.
 3. AI Analyst — ingests reports and proposals, generates summaries and embeddings, and answers natural-language queries over stored documents.
 
@@ -99,7 +99,7 @@ npm start
 * `/` → Status
 * `/ping` → UptimeRobot compatible
 * `/scrape/va` → Manual scrape VA.gov
-* `/scrape/esundhed` → Manual scrape Sundhedsdatabank.dk
+* `/scrape/sundhedsdatabank` → Manual scrape Sundhedsdatabank.dk (alias: `/scrape/esundhed`)
 
 ---
 
@@ -117,7 +117,7 @@ Current repo layout (trimmed to relevant files/folders):
 ├── debug/              # optional debug helpers
 ├── projects/           # new multi-project layout
 │   ├── analyst-scraper/
-│   │   └── watchers/   # real watcher implementations (va, esundhed)
+│   │   └── watchers/   # real watcher implementations (va, sundhedsdatabank)
 │   ├── ai-analyst/
 │   │   └── watchers/   # placeholder/dummy watcher for now
 │   └── kaxcap-index/
@@ -148,7 +148,7 @@ Notes:
 
 ## 🧪 Debugging Tips
 
-* Use `/scrape/va` or `/scrape/esundhed`
+* Use `/scrape/va` or `/scrape/sundhedsdatabank`
 * Check Supabase tables: `va_report`, `esundhed_report`
 * Inspect console logs
 
@@ -195,12 +195,6 @@ This repository contains internal tooling and experimental code developed for us
 
 Built by [Gudbjerg](https://github.com/Gudbjerg)
 
----
-
-## 🧙 Powered by Grimoire
-
-Join the GPTavern:
-[https://gptavern.mindgoblinstudios.com/](https://gptavern.mindgoblinstudios.com/)
 
 # AI Quarterly Reports
 
@@ -303,9 +297,3 @@ Main project folder containing backend and frontend components.
 
   Maintained by Tobias Gudbjerg for ABG internal use. Contact Tobias via LinkedIn: https://www.linkedin.com/in/tobias-gudbjerg-59b893249/
 
-  License
-
-  MIT
-
-  If you'd like a shorter or differently phrased README (internal-only, public-facing, or developer-focused), tell me which tone and I will update it accordingly.
-4. The pipeline:
