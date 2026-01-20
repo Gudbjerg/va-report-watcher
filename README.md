@@ -3,7 +3,7 @@
 This repository now contains a small product suite of related services for monitoring, analyzing, and proposing changes to financial/healthcare data. The original watcher/scraper is still present, but the project scope has expanded to three products:
 
 1. Watchers (scrapers) — lightweight site-specific scrapers that detect and persist newly published reports (VA and Sundhedsdatabank).
-2. Index Rebalancer — pulls index constituent data (FactSet), computes rebalancing proposals, and stores proposals for review/execution.
+2. Index Rebalancer — pulls index constituent data (X), computes rebalancing proposals, and stores proposals for review/execution.
 3. AI Analyst — ingests reports and proposals, generates summaries and embeddings, and answers natural-language queries over stored documents.
 
 Notes: the original watcher functionality (VA / Sundhedsdatabank) is preserved under `projects/analyst-scraper/watchers`. The new products live under `workers/` (rebalancer) and `services/ai-analyst/` (AI tooling).
@@ -278,7 +278,7 @@ Main project folder containing backend and frontend components.
   - `/product/rebalancer` — Rebalancer proposals (requires Supabase to persist)
   - `/index` — Index overview (KAXCAP/HEL/STO) with two tables per index
       Seeding for local verification
-      - Use the seed script to insert mock rows (since FactSet calls won’t work locally without allowlisted IPs):
+      - Use the seed script to insert mock rows (since X calls won’t work locally without allowlisted IPs):
         - `node scripts/seed-index.js`
         - Then open `/index` to verify Quarterly + Daily tables render.
     - Quarterly Proforma: see Methodology below (uncapped ranking → assign exception caps and 4.5% cap, delta vs current capped, AUM-driven cash/volume/DTC).
@@ -286,15 +286,15 @@ Main project folder containing backend and frontend components.
     - Refresh button per index calls `/api/kaxcap/run?region=...&indexId=...` to trigger the Python worker.
 
   Data flow
-  - Python worker (FactSet Formula) fetches, computes daily/quarterly, upserts to Supabase.
-  - Node server reads latest snapshots and renders JSON + tables. If local IP isn’t allow‑listed for FactSet, pages show empty until Supabase has rows.
+  - Python worker (X Formula) fetches, computes daily/quarterly, upserts to Supabase.
+  - Node server reads latest snapshots and renders JSON + tables. If local IP isn’t allow‑listed for X, pages show empty until Supabase has rows.
 
 ---
 
 ## 📐 Index Methodology (Daily vs Quarterly)
 
 Inputs
-- FactSet Formula API provides `price`, `shares`, `shares_capped`, `avg_vol_30d` (or variants), and optional `omx_weight`/`omx_weight_capped`.
+- X Formula API provides `price`, `shares`, `shares_capped`, `avg_vol_30d` (or variants), and optional `omx_weight`/`omx_weight_capped`.
 
 Caps and thresholds
 - Base cap: 4.5%.

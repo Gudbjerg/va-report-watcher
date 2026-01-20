@@ -4,8 +4,8 @@ import argparse
 import os
 
 from factset_client import fetch_index_raw
-from index_calcs import build_status, _compute_issuer_mcaps, _apply_daily_capping, _distribute_to_constituents
-from supabase_client import upsert_index_constituents, upsert_index_quarterly
+from index_calcs import build_status, build_issuer_status, _compute_issuer_mcaps, _apply_daily_capping, _distribute_to_constituents
+from supabase_client import upsert_index_constituents, upsert_index_quarterly, upsert_index_issuers
 
 
 def run_update() -> None:
@@ -45,6 +45,15 @@ def run_update() -> None:
 
     print(f"{args.index_id} status upsert complete.")
 
+    # Persist issuer-level snapshot (daily methodology); delta_vol/DTC intentionally blank
+    try:
+        df_issuers = build_issuer_status(
+            df_raw, as_of=as_of, index_id=args.index_id, region=args.region, aum_ccy=None, quarterly=False
+        )
+        upsert_index_issuers(df_issuers)
+    except Exception as e:
+        print("Issuer upsert error (non-fatal):", e)
+
     try:
         aum_val = float(args.aum)
     except Exception:
@@ -58,6 +67,14 @@ def run_update() -> None:
             upsert_index_quarterly(df_pro)
         except Exception as e:
             print("Quarterly upsert error:", e)
+        # Optionally persist issuer-level snapshot with AUM for delta_ccy (still blank delta_vol/DTC)
+        try:
+            df_issuers_q = build_issuer_status(
+                df_raw, as_of=as_of, index_id=args.index_id, region=args.region, aum_ccy=aum_val, quarterly=True
+            )
+            upsert_index_issuers(df_issuers_q)
+        except Exception as e:
+            print("Issuer (quarterly) upsert error (non-fatal):", e)
         try:
             # Daily status preview: apply daily capping weights and show top 10 by uncapped mcap
             try:

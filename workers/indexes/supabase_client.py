@@ -55,6 +55,16 @@ def _quarterly_table_for_index(index_id: str) -> str:
     return mapping.get(idx, f"index_quarterly_{idx.lower()}")
 
 
+def _issuers_table_for_index(index_id: str) -> str:
+    idx = (index_id or "").strip().upper()
+    mapping = {
+        "KAXCAP": "index_issuers_kaxcap",
+        "HELXCAP": "index_issuers_helxcap",
+        "OMXSALLS": "index_issuers_omxsalls",
+    }
+    return mapping.get(idx, f"index_issuers_{idx.lower()}")
+
+
 def upsert_index_constituents(df_status: pd.DataFrame) -> None:
     if df_status.empty:
         print("No rows to upsert.")
@@ -264,4 +274,85 @@ def upsert_index_quarterly(df_pro: pd.DataFrame) -> None:
             f"Inserted {len(normalized_payload)} rows into {table_name} (quarterly).")
         return
     print("Quarterly insert failed:", resp.status_code, resp.text)
+    resp.raise_for_status()
+
+
+def upsert_index_issuers(df_issuers: pd.DataFrame) -> None:
+    if df_issuers.empty:
+        print("No issuer rows to upsert.")
+        return
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        print("Supabase env missing: SUPABASE_URL or SERVICE KEY is empty. Configure SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY.")
+        return
+
+    idx = str(df_issuers.get("index_id", [None])[0] or "").upper()
+    as_of = df_issuers.get("as_of", [None])[0]
+    table_name = _issuers_table_for_index(idx)
+
+    headers = {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates",
+    }
+
+    raw_payload = df_issuers.to_dict(orient="records")
+    normalized_payload = []
+    for row in raw_payload:
+        r = dict(row)
+        # Remove fields not needed for issuer table
+        for drop in ("region", "index_id"):
+            r.pop(drop, None)
+        # Ensure numeric
+        for num_key in (
+            "mcap_uncapped",
+            "mcap_capped",
+            "curr_weight_uncapped",
+            "curr_weight_capped",
+            "weight",
+            "capped_weight",
+            "delta_pct",
+            "delta_ccy",
+        ):
+            if num_key in r and r[num_key] is not None:
+                try:
+                    r[num_key] = float(r[num_key])
+                    if math.isnan(r[num_key]) or math.isinf(r[num_key]):
+                        r[num_key] = None
+                except Exception:
+                    r[num_key] = None
+        # Normalize as_of
+        if "as_of" in r and r["as_of"] is not None:
+            try:
+                r["as_of"] = pd.to_datetime(r["as_of"]).isoformat()
+            except Exception:
+                try:
+                    r["as_of"] = str(r["as_of"])
+                except Exception:
+                    pass
+        normalized_payload.append(r)
+
+    # Delete and insert
+    delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
+    delete_params = {"as_of": f"eq.{as_of}"}
+    try:
+        requests.delete(delete_url, headers=headers, params=delete_params)
+    except Exception as de:
+        print("Warning: issuer delete failed:", de)
+
+    insert_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
+    resp = requests.post(insert_url, headers=headers, json=normalized_payload)
+    if resp.ok:
+        print(
+            f"Inserted {len(normalized_payload)} rows into {table_name} (issuers).")
+        return
+    print("Issuer insert failed:", resp.status_code, resp.text)
+    # If table does not exist yet, log and continue without raising
+    try:
+        if resp.status_code == 404:
+            print(
+                f"Issuer table {table_name} not found; skipping persistence.")
+            return
+    except Exception:
+        pass
     resp.raise_for_status()

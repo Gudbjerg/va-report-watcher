@@ -317,3 +317,115 @@ def build_quarterly_proforma(df_raw: pd.DataFrame, as_of: date, index_id: str, r
     # Sort by largest uncapped mcap for preview consistency
     out_sorted = out.sort_values("mcap_uncapped", ascending=False)
     return out_sorted[cols].copy()
+
+
+def build_issuer_status(
+    df_raw: pd.DataFrame,
+    as_of: date,
+    index_id: str,
+    region: str,
+    aum_ccy: float | None = None,
+    quarterly: bool = False,
+) -> pd.DataFrame:
+    """Compute issuer-level snapshot (aggregated across share classes).
+
+    - Aggregates mcap and computes init weights by issuer
+    - Applies daily or quarterly methodology at issuer level
+    - Computes delta vs current capped (issuer-summed)
+    - Blanks delta_vol and days_to_cover by design (issuer-level)
+    """
+    d = _normalize_input(df_raw)
+    params = _params_for_region(region)
+    params["region"] = (region or "CPH").upper()
+    issuers_df, _ = _compute_issuer_mcaps(d)
+    final_issuer_w = (
+        _apply_quarterly_exceptions(issuers_df, params)
+        if quarterly
+        else _apply_daily_capping(issuers_df, params)
+    )
+
+    # Current weights per issuer (uncapped for context, capped for delta)
+    d_curr = d.assign(issuer=d.get("issuer", d.get("name", "").str.upper()))
+    agg = (
+        d_curr.groupby("issuer", as_index=False)[
+            ["mcap_uncapped", "mcap_capped"]
+        ].sum()
+    )
+    total_unc = agg["mcap_uncapped"].sum() or 1.0
+    total_cap = agg["mcap_capped"].sum() or 1.0
+    agg["curr_weight_uncapped"] = agg["mcap_uncapped"] / total_unc
+    agg["curr_weight_capped"] = agg["mcap_capped"] / total_cap
+
+    # Final weights dict → frame
+    fw = (
+        pd.DataFrame({"issuer": list(final_issuer_w.keys()),
+                     "weight": list(final_issuer_w.values())})
+        if final_issuer_w
+        else pd.DataFrame({"issuer": [], "weight": []})
+    )
+    out = agg.merge(fw, on="issuer", how="left")
+    out["weight"] = pd.to_numeric(out["weight"], errors="coerce").fillna(0.0)
+    out["capped_weight"] = out["weight"]  # issuer-level target capped weight
+
+    # Delta vs current capped weight
+    out["delta_pct"] = out["capped_weight"] - out["curr_weight_capped"]
+
+    # Monetary delta (optional)
+    try:
+        aum = float(aum_ccy) if aum_ccy else None
+    except Exception:
+        aum = None
+    if aum is not None:
+        out["delta_ccy"] = out["delta_pct"] * aum
+    else:
+        out["delta_ccy"] = None
+
+    # Issuer-level: blank delta_vol and days_to_cover per methodology note
+    out["delta_vol"] = None
+    out["days_to_cover"] = None
+
+    # Choose a display name for issuer (strip obvious class designators using the top row match)
+    name_lookup = (
+        d_curr.groupby("issuer", as_index=False)["name"].first()
+        if "name" in d_curr.columns
+        else pd.DataFrame({"issuer": out["issuer"], "name": out["issuer"]})
+    )
+    out = out.merge(name_lookup, on="issuer", how="left")
+
+    # Attach keys
+    out["index_id"] = index_id
+    out["region"] = (region or "").upper()
+    out["as_of"] = pd.to_datetime(as_of).tz_localize("UTC").isoformat()
+
+    # Rounding
+    for c in ("mcap_uncapped", "mcap_capped", "delta_ccy"):
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").round(2)
+    for c in (
+        "curr_weight_uncapped",
+        "curr_weight_capped",
+        "weight",
+        "capped_weight",
+        "delta_pct",
+    ):
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").round(4)
+
+    cols = [
+        "index_id",
+        "issuer",
+        "name",
+        "mcap_uncapped",
+        "mcap_capped",
+        "curr_weight_uncapped",
+        "curr_weight_capped",
+        "weight",
+        "capped_weight",
+        "delta_pct",
+        "delta_ccy",
+        "delta_vol",
+        "days_to_cover",
+        "as_of",
+        "region",
+    ]
+    return out[cols].copy()
