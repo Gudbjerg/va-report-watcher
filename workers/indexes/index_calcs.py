@@ -36,6 +36,15 @@ def _normalize_input(df: pd.DataFrame) -> pd.DataFrame:
     d["mcap_uncapped"] = d["shares"] * d["price"]
     d["mcap_capped"] = d["shares_capped"] * d["price"]
 
+    # If no capped shares available (e.g., STO), fall back to uncapped so
+    # 'capped_weight' equals 'weight' and daily pages remain meaningful.
+    try:
+        if (d["mcap_capped"].sum() == 0.0) and (d["mcap_uncapped"].sum() > 0.0):
+            d["shares_capped"] = d["shares"]
+            d["mcap_capped"] = d["mcap_uncapped"]
+    except Exception:
+        pass
+
     if (d["mcap_uncapped"].sum() == 0.0) and ("omx_weight" in d.columns):
         w = pd.to_numeric(d["omx_weight"], errors="coerce").fillna(0.0)
         if w.sum() > 0:

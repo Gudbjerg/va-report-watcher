@@ -213,10 +213,7 @@ function renderHeader() {
                 <img src="/assets/MarketBuddyLogo.png" alt="MarketBuddy" class="h-12 md:h-16 lg:h-20 w-auto object-contain">
       </a>
             <nav class="hidden md:flex gap-8 items-center text-sm text-slate-600">
-              <a href="/kaxcap" class="hover:text-slate-900">KAXCAP</a>
-              <a href="/hel" class="hover:text-slate-900">HEL</a>
-              <a href="/sto" class="hover:text-slate-900">STO</a>
-              <a href="/product/rebalancer" class="hover:text-slate-900">Index Rebalancer</a>
+              <a href="/index" class="hover:text-slate-900">Indexes</a>
               <a href="/watchers" class="hover:text-slate-900">Watchers</a>
               <a href="/product/ai-analyst" class="hover:text-slate-900">AI Analyst</a>
                       <a href="/about" class="hover:text-slate-900">About</a>
@@ -249,6 +246,45 @@ function renderFooter() {
     `;
 }
 // Server-side helpers and routes for index pages
+// Helper: fetch latest snapshot rows for an index
+async function fetchLatestIndexRows(indexId) {
+  const table = tableForIndex(indexId);
+  const sel = supabase.from(table).select('as_of').order('as_of', { ascending: false }).limit(1);
+  const { data: dates, error: err1 } = await sel;
+  if (err1) throw err1;
+  const asOf = dates && dates[0] ? dates[0].as_of : null;
+  if (!asOf) return [];
+  const { data, error: err2 } = await supabase
+    .from(table)
+    .select('*')
+    .eq('as_of', asOf)
+    .order('capped_weight', { ascending: false });
+  if (err2) throw err2;
+  return Array.isArray(data) ? data : [];
+}
+
+// Helper: fetch index metadata (currency, aum) dynamically; use safe fallbacks
+async function getIndexMeta(indexId) {
+  const fallback = (id) => {
+    const up = String(id || '').toUpperCase();
+    if (up === 'KAXCAP') return { currency: 'DKK', aum: 110000000000 };
+    if (up === (process.env.HEL_INDEX_ID || 'HELXCAP')) return { currency: 'EUR', aum: 22000000000 };
+    if (up === (process.env.STO_INDEX_ID || 'OMXSALLS')) return { currency: 'SEK', aum: 450000000000 };
+    return { currency: '', aum: null };
+  };
+  try {
+    const { data, error } = await supabase
+      .from('indexes')
+      .select('name, currency, aum')
+      .eq('name', String(indexId))
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) return fallback(indexId);
+    return { currency: data.currency || fallback(indexId).currency, aum: (data.aum != null ? Number(data.aum) : fallback(indexId).aum) };
+  } catch (e) {
+    return fallback(indexId);
+  }
+}
 function renderIndexTable(title, rows, columns) {
   const headers = columns.map((c) => '<th class="px-3 py-2 text-left text-xs font-semibold text-slate-600">' + c.label + '</th>').join('');
   const body = rows.map((r) => {
@@ -293,17 +329,41 @@ function rankBy(rows, key, desc = true) {
 
 app.get('/kaxcap', async (req, res) => {
   try {
-    const rows = (await fetchIndexRows('KAXCAP')).filter(r => Number(r.mcap || 0) > 0);
-    // Rank by uncapped mcap and show Top 25 (non-zero rows)
-    const ranked = rankBy(rows, 'mcap', true).slice(0, 25);
+    const rows = (await fetchLatestIndexRows('KAXCAP')).filter(r => Number(r.capped_weight || 0) > 0);
+    // Daily must be capped ranking — show Top 25 by capped_weight
+    const ranked = rankBy(rows, 'capped_weight', true).slice(0, 25);
+    const meta = await getIndexMeta('KAXCAP');
+    const aum = meta.aum;
+    const viewRows = ranked.map(r => {
+      const mcapRaw = (r.market_cap != null ? Number(r.market_cap) : (r.mcap != null ? Number(r.mcap) : null));
+      const mcapBn = (mcapRaw != null) ? (mcapRaw / 1e9) : null;
+      const deltaFrac = (typeof r.delta_pct === 'number') ? Number(r.delta_pct) : null;
+      const deltaAmt = (aum && deltaFrac != null) ? (aum * deltaFrac) : null;
+      const deltaVolShares = (deltaAmt != null && r.price != null) ? (deltaAmt / Number(r.price)) : null;
+      const adv = (r.avg_daily_volume != null ? Number(r.avg_daily_volume) : null);
+      const dtc = (deltaVolShares != null && adv != null && adv > 0) ? (Math.abs(deltaVolShares) / adv) : null;
+      return Object.assign({}, r, {
+        name_view: r.name || r.issuer || '',
+        mcap_bn: mcapBn,
+        weight_pct: (r.weight != null ? Number(r.weight) : null),
+        capped_weight_pct: (r.capped_weight != null ? Number(r.capped_weight) : null),
+        delta_pct_view: (deltaFrac != null ? deltaFrac : null),
+        delta_amt: (deltaAmt != null ? deltaAmt : null),
+        dtc_view: (dtc != null ? dtc : null)
+      });
+    });
     const cols = [
-      { key: 'ticker', label: 'Ticker' },
-      { key: 'name', label: 'Name' },
-      { key: 'mcap', label: 'Mcap (uncapped)', format: (v) => Number(v || 0).toLocaleString() },
-      { key: 'weight', label: 'Weight (uncapped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'capped_weight', label: 'Weight (capped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
+      { key: 'name_view', label: 'Name' },
+      { key: 'mcap_bn', label: 'Market Cap, bn', format: v => (v != null ? Number(v).toFixed(2) : '') },
+      { key: 'weight_pct', label: 'Weight', format: v => (v != null ? ((Number(v) > 1 ? Number(v) : Number(v) * 100).toFixed(2) + '%') : '') },
+      { key: 'capped_weight_pct', label: 'Capped Weight', format: v => (v != null ? ((Number(v) > 1 ? Number(v) : Number(v) * 100).toFixed(2) + '%') : '') },
+      { key: 'delta_pct_view', label: 'Delta, %', format: v => (v != null ? ((Number(v) > 1 ? Number(v) : Number(v) * 100).toFixed(2) + '%') : '') },
+      { key: 'delta_amt', label: 'Delta, ' + (meta.currency || 'CCY'), format: v => (v != null ? Math.round(Number(v)).toLocaleString('en-DK') : '') },
+      { key: 'dtc_view', label: 'Days to Cover', format: v => (v != null ? Number(v).toFixed(2) : '') },
+      { key: 'flags', label: 'Flags' },
     ];
-    const html = ['<!doctype html><html><head>', renderHead('KAXCAP — Daily Status (Top 25 by Uncapped Mcap)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('KAXCAP — Daily Status (Top 25 by Uncapped Mcap)', ranked, cols), renderFooter(), '</body></html>'].join('');
+    const controls = '<div class="max-w-6xl mx-auto px-6 flex items-center gap-4"><a href="/kaxcap/quarterly" class="text-blue-600">Quarterly preview →</a><button id="refreshKAX" class="px-3 py-2 border rounded">Refresh Now</button><span id="refreshKAXMeta" class="text-sm text-slate-600"></span></div>';
+    const html = ['<!doctype html><html><head>', renderHead('KAXCAP — Daily Status (Top 25 by Capped Weight)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('KAXCAP — Daily Status (Top 25 by Capped Weight)', viewRows, cols), controls, '<script>document.getElementById("refreshKAX")?.addEventListener("click", async ()=>{try{const r=await fetch("/api/kaxcap/run?region=CPH&indexId=KAXCAP",{method:"POST"});const j=await r.json();document.getElementById("refreshKAXMeta").textContent=j.ok?"Updated — reloading…":"Error: "+(j.error||"unknown");setTimeout(()=>location.reload(),1200);}catch(e){document.getElementById("refreshKAXMeta").textContent="Error: "+(e&&e.message?e.message:e);}});</script>', renderFooter(), '</body></html>'].join('');
     res.send(html);
   } catch (e) {
     res.status(500).send(String(e && e.message ? e.message : e));
@@ -312,16 +372,41 @@ app.get('/kaxcap', async (req, res) => {
 
 app.get('/hel', async (req, res) => {
   try {
-    const rows = (await fetchIndexRows(process.env.HEL_INDEX_ID || 'HELXCAP')).filter(r => Number(r.mcap || 0) > 0);
-    const ranked = rankBy(rows, 'mcap', true).slice(0, 25);
+    const rows = (await fetchLatestIndexRows(process.env.HEL_INDEX_ID || 'HELXCAP')).filter(r => Number(r.capped_weight || 0) > 0);
+    const ranked = rankBy(rows, 'capped_weight', true).slice(0, 25);
+    const idxId = process.env.HEL_INDEX_ID || 'HELXCAP';
+    const meta = await getIndexMeta(idxId);
+    const aum = meta.aum;
+    const viewRows = ranked.map(r => {
+      const mcapRaw = (r.market_cap != null ? Number(r.market_cap) : (r.mcap != null ? Number(r.mcap) : null));
+      const mcapBn = (mcapRaw != null) ? (mcapRaw / 1e9) : null;
+      const deltaFrac = (typeof r.delta_pct === 'number') ? Number(r.delta_pct) : null;
+      const deltaAmt = (aum && deltaFrac != null) ? (aum * deltaFrac) : null;
+      const deltaVolShares = (deltaAmt != null && r.price != null) ? (deltaAmt / Number(r.price)) : null;
+      const adv = (r.avg_daily_volume != null ? Number(r.avg_daily_volume) : null);
+      const dtc = (deltaVolShares != null && adv != null && adv > 0) ? (Math.abs(deltaVolShares) / adv) : null;
+      return Object.assign({}, r, {
+        name_view: r.name || r.issuer || '',
+        mcap_bn: mcapBn,
+        weight_pct: (r.weight != null ? Number(r.weight) : null),
+        capped_weight_pct: (r.capped_weight != null ? Number(r.capped_weight) : null),
+        delta_pct_view: (deltaFrac != null ? deltaFrac : null),
+        delta_amt: (deltaAmt != null ? deltaAmt : null),
+        dtc_view: (dtc != null ? dtc : null)
+      });
+    });
     const cols = [
-      { key: 'ticker', label: 'Ticker' },
-      { key: 'name', label: 'Name' },
-      { key: 'mcap', label: 'Mcap (uncapped)', format: (v) => Number(v || 0).toLocaleString() },
-      { key: 'weight', label: 'Weight (uncapped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'capped_weight', label: 'Weight (capped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
+      { key: 'name_view', label: 'Name' },
+      { key: 'mcap_bn', label: 'Market Cap, bn', format: v => (v != null ? Number(v).toFixed(2) : '') },
+      { key: 'weight_pct', label: 'Weight', format: v => (v != null ? ((Number(v) > 1 ? Number(v) : Number(v) * 100).toFixed(2) + '%') : '') },
+      { key: 'capped_weight_pct', label: 'Capped Weight', format: v => (v != null ? ((Number(v) > 1 ? Number(v) : Number(v) * 100).toFixed(2) + '%') : '') },
+      { key: 'delta_pct_view', label: 'Delta, %', format: v => (v != null ? ((Number(v) > 1 ? Number(v) : Number(v) * 100).toFixed(2) + '%') : '') },
+      { key: 'delta_amt', label: 'Delta, ' + (meta.currency || 'CCY'), format: v => (v != null ? Math.round(Number(v)).toLocaleString('en-DK') : '') },
+      { key: 'dtc_view', label: 'Days to Cover', format: v => (v != null ? Number(v).toFixed(2) : '') },
+      { key: 'flags', label: 'Flags' },
     ];
-    const html = ['<!doctype html><html><head>', renderHead('HEL — Daily Status (Top 25 by Uncapped Mcap)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('HEL — Daily Status (Top 25 by Uncapped Mcap)', ranked, cols), renderFooter(), '</body></html>'].join('');
+    const controls = '<div class="max-w-6xl mx-auto px-6 flex items-center gap-4"><a href="/hel/quarterly" class="text-blue-600">Quarterly preview →</a><button id="refreshHEL" class="px-3 py-2 border rounded">Refresh Now</button><span id="refreshHELMeta" class="text-sm text-slate-600"></span></div>';
+    const html = ['<!doctype html><html><head>', renderHead('HEL — Daily Status (Top 25 by Capped Weight)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('HEL — Daily Status (Top 25 by Capped Weight)', viewRows, cols), controls, '<script>document.getElementById("refreshHEL")?.addEventListener("click", async ()=>{try{const r=await fetch("/api/kaxcap/run?region=HEL&indexId=' + idxId + '",{method:"POST"});const j=await r.json();document.getElementById("refreshHELMeta").textContent=j.ok?"Updated — reloading…":"Error: "+(j.error||"unknown");setTimeout(()=>location.reload(),1200);}catch(e){document.getElementById("refreshHELMeta").textContent="Error: "+(e&&e.message?e.message:e);}});</script>', renderFooter(), '</body></html>'].join('');
     res.send(html);
   } catch (e) {
     res.status(500).send(String(e && e.message ? e.message : e));
@@ -330,16 +415,145 @@ app.get('/hel', async (req, res) => {
 
 app.get('/sto', async (req, res) => {
   try {
-    const rows = (await fetchIndexRows(process.env.STO_INDEX_ID || 'OMXSALLS')).filter(r => Number(r.mcap || 0) > 0);
-    const ranked = rankBy(rows, 'mcap', true).slice(0, 25);
+    const rows = (await fetchLatestIndexRows(process.env.STO_INDEX_ID || 'OMXSALLS')).filter(r => Number(r.capped_weight || 0) > 0);
+    const ranked = rankBy(rows, 'capped_weight', true).slice(0, 25);
+    const idxId = process.env.STO_INDEX_ID || 'OMXSALLS';
+    const meta = await getIndexMeta(idxId);
+    const aum = meta.aum;
+    const viewRows = ranked.map(r => {
+      const mcapRaw = (r.market_cap != null ? Number(r.market_cap) : (r.mcap != null ? Number(r.mcap) : null));
+      const mcapBn = (mcapRaw != null) ? (mcapRaw / 1e9) : null;
+      const deltaFrac = (typeof r.delta_pct === 'number') ? Number(r.delta_pct) : null;
+      const deltaAmt = (aum && deltaFrac != null) ? (aum * deltaFrac) : null;
+      const deltaVolShares = (deltaAmt != null && r.price != null) ? (deltaAmt / Number(r.price)) : null;
+      const adv = (r.avg_daily_volume != null ? Number(r.avg_daily_volume) : null);
+      const dtc = (deltaVolShares != null && adv != null && adv > 0) ? (Math.abs(deltaVolShares) / adv) : null;
+      return Object.assign({}, r, {
+        name_view: r.name || r.issuer || '',
+        mcap_bn: mcapBn,
+        weight_pct: (r.weight != null ? Number(r.weight) : null),
+        capped_weight_pct: (r.capped_weight != null ? Number(r.capped_weight) : null),
+        delta_pct_view: (deltaFrac != null ? deltaFrac : null),
+        delta_amt: (deltaAmt != null ? deltaAmt : null),
+        dtc_view: (dtc != null ? dtc : null)
+      });
+    });
     const cols = [
-      { key: 'ticker', label: 'Ticker' },
-      { key: 'name', label: 'Name' },
-      { key: 'mcap', label: 'Mcap (uncapped)', format: (v) => Number(v || 0).toLocaleString() },
-      { key: 'weight', label: 'Weight (uncapped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'capped_weight', label: 'Weight (capped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
+      { key: 'name_view', label: 'Name' },
+      { key: 'mcap_bn', label: 'Market Cap, bn', format: v => (v != null ? Number(v).toFixed(2) : '') },
+      { key: 'weight_pct', label: 'Weight', format: v => (v != null ? ((Number(v) > 1 ? Number(v) : Number(v) * 100).toFixed(2) + '%') : '') },
+      { key: 'capped_weight_pct', label: 'Capped Weight', format: v => (v != null ? ((Number(v) > 1 ? Number(v) : Number(v) * 100).toFixed(2) + '%') : '') },
+      { key: 'delta_pct_view', label: 'Delta, %', format: v => (v != null ? ((Number(v) > 1 ? Number(v) : Number(v) * 100).toFixed(2) + '%') : '') },
+      { key: 'delta_amt', label: 'Delta, ' + (meta.currency || 'CCY'), format: v => (v != null ? Math.round(Number(v)).toLocaleString('en-DK') : '') },
+      { key: 'dtc_view', label: 'Days to Cover', format: v => (v != null ? Number(v).toFixed(2) : '') },
+      { key: 'flags', label: 'Flags' },
     ];
-    const html = ['<!doctype html><html><head>', renderHead('STO — Daily Status (Top 25 by Uncapped Mcap)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('STO — Daily Status (Top 25 by Uncapped Mcap)', ranked, cols), renderFooter(), '</body></html>'].join('');
+    const controls = '<div class="max-w-6xl mx-auto px-6 flex items-center gap-4"><a href="/sto/quarterly" class="text-blue-600">Quarterly preview →</a><button id="refreshSTO" class="px-3 py-2 border rounded">Refresh Now</button><span id="refreshSTOMeta" class="text-sm text-slate-600"></span></div>';
+    const html = ['<!doctype html><html><head>', renderHead('STO — Daily Status (Top 25 by Capped Weight)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('STO — Daily Status (Top 25 by Capped Weight)', viewRows, cols), controls, '<script>document.getElementById("refreshSTO")?.addEventListener("click", async ()=>{try{const r=await fetch("/api/kaxcap/run?region=STO&indexId=' + idxId + '",{method:"POST"});const j=await r.json();document.getElementById("refreshSTOMeta").textContent=j.ok?"Updated — reloading…":"Error: "+(j.error||"unknown");setTimeout(()=>location.reload(),1200);}catch(e){document.getElementById("refreshSTOMeta").textContent="Error: "+(e&&e.message?e.message:e);}});</script>', renderFooter(), '</body></html>'].join('');
+    res.send(html);
+  } catch (e) {
+    res.status(500).send(String(e && e.message ? e.message : e));
+  }
+});
+
+// Per-index Quarterly pages mirroring Excel-style proforma
+function renderQuarterlyRows(rows, region) {
+  const aumByRegion = { CPH: 110000000000, HEL: 22000000000, STO: 450000000000 };
+  const aum = aumByRegion[region];
+  return rows.map(r => {
+    const mcapBn = (r.mcap_uncapped != null ? Number(r.mcap_uncapped) / 1e9 : (r.mcap != null ? Number(r.mcap) / 1e9 : null));
+    const currU = (r.curr_weight_uncapped != null ? Number(r.curr_weight_uncapped) : (r.old_weight != null ? Number(r.old_weight) : null));
+    const currC = (r.curr_weight_capped != null ? Number(r.curr_weight_capped) : null);
+    const tgt = (r.weight != null ? Number(r.weight) : (r.new_weight != null ? Number(r.new_weight) : null));
+    const deltaFrac = (r.delta_pct != null ? Number(r.delta_pct) : (currC != null && tgt != null ? (tgt - currC) : null));
+    const deltaAmt = (aum && deltaFrac != null ? aum * deltaFrac : null);
+    return Object.assign({}, r, {
+      name_view: r.name || r.issuer || '',
+      mcap_bn: mcapBn,
+      curr_uncapped_pct: currU,
+      curr_capped_pct: currC,
+      target_pct: tgt,
+      delta_pct_view: deltaFrac,
+      delta_amt: deltaAmt,
+    });
+  });
+}
+
+function quarterlyColumns(ccy) {
+  const fmtPct = v => (v != null ? ((Number(v) > 1 ? Number(v) : Number(v) * 100).toFixed(2) + '%') : '');
+  return [
+    { key: 'name_view', label: 'Name' },
+    { key: 'mcap_bn', label: 'Mcap (bn)', format: v => (v != null ? Number(v).toFixed(2) : '') },
+    { key: 'curr_uncapped_pct', label: 'Current (uncapped)', format: fmtPct },
+    { key: 'curr_capped_pct', label: 'Current (capped)', format: fmtPct },
+    { key: 'target_pct', label: 'Target', format: fmtPct },
+    { key: 'delta_pct_view', label: 'Delta, %', format: v => (v != null ? ((Number(v) > 1 ? Number(v) : Number(v) * 100).toFixed(2) + '%') : '') },
+    { key: 'delta_amt', label: 'Delta, ' + ccy, format: v => (v != null ? Math.round(Number(v)).toLocaleString('en-DK') : '') },
+    { key: 'delta_vol', label: 'Delta Vol (shrs)', format: v => (v != null ? Math.round(Number(v)).toLocaleString('en-DK') : '') },
+    { key: 'days_to_cover', label: 'Days to Cover', format: v => (v != null ? Number(v).toFixed(2) : '') },
+    { key: 'flags', label: 'Flags' },
+  ];
+}
+
+async function fetchQuarterlyLatest(indexId) {
+  const tableName = quarterlyTableForIndex(indexId);
+  if (!tableName) return { asOf: null, rows: [] };
+  const { data: dates, error: err1 } = await supabase.from(tableName).select('as_of').order('as_of', { ascending: false }).limit(1);
+  if (err1) throw err1;
+  const asOf = dates && dates[0] ? dates[0].as_of : null;
+  let rows = [];
+  if (asOf) {
+    const { data, error: err2 } = await supabase.from(tableName).select('*').eq('as_of', asOf).order('mcap_uncapped', { ascending: false });
+    if (err2) throw err2;
+    rows = Array.isArray(data) ? data : [];
+  }
+  return { asOf, rows };
+}
+
+app.get('/kaxcap/quarterly', async (req, res) => {
+  try {
+    const { asOf, rows } = await fetchQuarterlyLatest('KAXCAP');
+    const idxMeta = await getIndexMeta('KAXCAP');
+    const region = 'CPH';
+    const ccy = idxMeta.currency || 'DKK';
+    const viewRows = renderQuarterlyRows(rows, region);
+    const cols = quarterlyColumns(ccy);
+    const pageMeta = '<div class="max-w-6xl mx-auto px-6 text-sm text-slate-600">As of: ' + (asOf || 'unknown') + ' · Rows: ' + rows.length + '</div>';
+    const html = ['<!doctype html><html><head>', renderHead('KAXCAP — Quarterly Proforma'), '</head><body class="bg-gray-50">', renderHeader(), pageMeta, renderIndexTable('KAXCAP — Quarterly Proforma', viewRows, cols), renderFooter(), '</body></html>'].join('');
+    res.send(html);
+  } catch (e) {
+    res.status(500).send(String(e && e.message ? e.message : e));
+  }
+});
+
+app.get('/hel/quarterly', async (req, res) => {
+  try {
+    const idxId = process.env.HEL_INDEX_ID || 'HELXCAP';
+    const { asOf, rows } = await fetchQuarterlyLatest(idxId);
+    const idxMeta = await getIndexMeta(idxId);
+    const region = 'HEL';
+    const ccy = idxMeta.currency || 'EUR';
+    const viewRows = renderQuarterlyRows(rows, region);
+    const cols = quarterlyColumns(ccy);
+    const pageMeta = '<div class="max-w-6xl mx-auto px-6 text-sm text-slate-600">As of: ' + (asOf || 'unknown') + ' · Rows: ' + rows.length + '</div>';
+    const html = ['<!doctype html><html><head>', renderHead('HEL — Quarterly Proforma'), '</head><body class="bg-gray-50">', renderHeader(), pageMeta, renderIndexTable('HEL — Quarterly Proforma', viewRows, cols), renderFooter(), '</body></html>'].join('');
+    res.send(html);
+  } catch (e) {
+    res.status(500).send(String(e && e.message ? e.message : e));
+  }
+});
+
+app.get('/sto/quarterly', async (req, res) => {
+  try {
+    const idxId = process.env.STO_INDEX_ID || 'OMXSALLS';
+    const { asOf, rows } = await fetchQuarterlyLatest(idxId);
+    const idxMeta = await getIndexMeta(idxId);
+    const region = 'STO';
+    const ccy = idxMeta.currency || 'SEK';
+    const viewRows = renderQuarterlyRows(rows, region);
+    const cols = quarterlyColumns(ccy);
+    const pageMeta = '<div class="max-w-6xl mx-auto px-6 text-sm text-slate-600">As of: ' + (asOf || 'unknown') + ' · Rows: ' + rows.length + '</div>';
+    const html = ['<!doctype html><html><head>', renderHead('STO — Quarterly Proforma'), '</head><body class="bg-gray-50">', renderHeader(), pageMeta, renderIndexTable('STO — Quarterly Proforma', viewRows, cols), renderFooter(), '</body></html>'].join('');
     res.send(html);
   } catch (e) {
     res.status(500).send(String(e && e.message ? e.message : e));
@@ -402,29 +616,29 @@ async function renderDashboard(project = 'Universal') {
   
         <div class="max-w-6xl mx-auto px-6 py-16 grid grid-cols-1 md:grid-cols-3 gap-8 items-center">
           <div class="md:col-span-2">
-            <div class="mb-6 text-sm text-yellow-300 uppercase tracking-wide">Powered by ABG Sundal Collier</div>
-            <h1 class="text-4xl md:text-5xl font-extrabold leading-tight mb-4">Your Intelligent Edge in Equity Sales</h1>
-            <p class="text-slate-200 max-w-xl mb-6">Real-time scraping, index analytics, and an AI that converts rebalances and earnings deviations into concise, actionable sales commentary for ABG traders and sales teams.</p>
-            <div class="text-sm text-yellow-300">Use the top navigation to open product pages.</div>
+            <div class="mb-4 text-sm text-yellow-600 uppercase tracking-wide">Powered by ABG Sundal Collier</div>
+            <h1 class="text-4xl md:text-5xl font-extrabold leading-tight mb-4 text-gray-900">Your Intelligent Edge in Equity Sales</h1>
+            <p class="text-gray-700 max-w-xl mb-6">Real-time scraping, index analytics, and an AI that converts rebalances and earnings deviations into concise, actionable sales commentary for ABG traders and sales teams.</p>
+            <div class="text-sm text-gray-600">Use the top navigation to open product pages.</div>
           </div>
 
           <div class="md:block">
             <div id="memeCard" class="bg-white/5 rounded-lg p-4 shadow-lg">
               <div id="memeArea" class="meme-area">
                 <img id="topMeme" src="/assets/tscMeme.jpg" alt="hero" class="meme-img mb-3" loading="lazy">
-                <div class="text-sm text-slate-200 font-medium">Meme of the Moment</div>
-                <div id="memeMeta" class="mt-2 bg-white/10 p-3 rounded flex items-start gap-3">
-                  <div class="text-sm text-slate-100">
-                    <div id="memeTitle" class="font-semibold">Internal meme</div>
-                    <div id="memeCaption" class="text-slate-300 text-xs mt-1">For internal ABG use — post brief comments or images for the team</div>
+                <div class="text-sm text-gray-800 font-medium">Meme of the Moment</div>
+                <div id="memeMeta" class="mt-2 bg-white p-3 rounded border flex items-start gap-3">
+                  <div class="text-sm text-gray-700">
+                    <div id="memeTitle" class="font-semibold text-gray-900">Internal meme</div>
+                    <div id="memeCaption" class="text-gray-600 text-xs mt-1">For internal ABG use — post brief comments or images for the team</div>
                   </div>
                 </div>
               </div>
 
               <div class="mt-3 flex items-center justify-between">
-                <div class="text-xs text-slate-400">Tip: collapse to hide the image (session only)</div>
+                <div class="text-xs text-gray-600">Tip: collapse to hide the image (session only)</div>
                 <div class="flex items-center gap-3">
-                  <button id="toggleMemeBtn" class="text-xs text-slate-200 underline">Collapse</button>
+                  <button id="toggleMemeBtn" class="text-xs text-blue-700 underline">Collapse</button>
                 </div>
               </div>
 
@@ -432,9 +646,9 @@ async function renderDashboard(project = 'Universal') {
 
               <div id="memeFormWrapper" class="mt-3 hidden">
                 <form id="memeForm" class="space-y-2">
-                  <input name="title" placeholder="Title" class="w-full px-3 py-2 rounded bg-white/5 text-white text-sm" />
-                  <input name="image" placeholder="Image URL" class="w-full px-3 py-2 rounded bg-white/5 text-white text-sm" />
-                  <textarea name="caption" placeholder="Short caption" class="w-full px-3 py-2 rounded bg-white/5 text-white text-sm"></textarea>
+                  <input name="title" placeholder="Title" class="w-full px-3 py-2 rounded border bg-white text-gray-800 text-sm" />
+                  <input name="image" placeholder="Image URL" class="w-full px-3 py-2 rounded border bg-white text-gray-800 text-sm" />
+                  <textarea name="caption" placeholder="Short caption" class="w-full px-3 py-2 rounded border bg-white text-gray-800 text-sm"></textarea>
                   <div class="flex gap-2">
                     <button type="submit" class="px-3 py-2 bg-yellow-400 text-slate-900 rounded">Post</button>
                     <button type="button" id="cancelMeme" class="px-3 py-2 border rounded">Cancel</button>
@@ -576,6 +790,9 @@ app.get('/project/:name', async (req, res) => {
 
 app.get('/ping', (_, res) => res.send('pong'));
 
+// Make the overview discoverable at root
+app.get('/', (req, res) => res.redirect(302, '/index'));
+
 app.get('/scrape/va', async (_, res) => {
   await updateVA();
   res.send('VA scrape complete!');
@@ -595,7 +812,11 @@ app.get('/api/kaxcap/status', getLatestKaxcapStatus);
 app.post('/api/kaxcap/run', (req, res) => {
   try {
     const scriptPath = path.join(__dirname, 'workers', 'indexes', 'main.py');
-    const pythonCmd = process.env.PYTHON || 'python3';
+    let pythonCmd = process.env.PYTHON || 'python3';
+    try {
+      const venvPy = path.join(__dirname, '.venv', 'bin', process.platform === 'win32' ? 'python.exe' : 'python');
+      if (fs.existsSync(venvPy)) pythonCmd = venvPy;
+    } catch { }
     const args = [scriptPath];
     const { region, indexId, asOf, quarterly } = Object.assign({}, req.query, req.body);
     if (region) { args.push('--region', String(region).toUpperCase()); }
@@ -614,6 +835,17 @@ app.post('/api/kaxcap/run', (req, res) => {
     });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
+  }
+});
+
+// API: index meta (currency, AUM) for overview page
+app.get('/api/index/:indexId/meta', async (req, res) => {
+  try {
+    const indexId = String(req.params.indexId || '').toUpperCase();
+    const meta = await getIndexMeta(indexId);
+    return res.json({ indexId, currency: meta.currency || null, aum: meta.aum || null });
+  } catch (e) {
+    return res.status(500).json({ error: e && e.message ? e.message : String(e) });
   }
 });
 
@@ -694,11 +926,12 @@ app.get('/index', async (req, res) => {
               <div class="flex gap-3 mb-3 sticky top-0 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80 z-10 py-2">
                 <button class="px-3 py-2 border rounded" data-idx="KAXCAP">KAXCAP (CPH)</button>
                 <button class="px-3 py-2 border rounded" data-idx="${process.env.HEL_INDEX_ID || 'HELXCAP'}">Helsinki</button>
-                <button class="px-3 py-2 border rounded" data-idx="${process.env.STO_INDEX_ID || 'OMXSALLS'}">Stockholm</button>
+                <button class="px-3 py-2 border rounded opacity-50 cursor-not-allowed" title="Paused">Stockholm (paused)</button>
                 <span class="ml-auto"></span>
                 <div class="flex items-center gap-3">
                   <span id="refreshTicker" class="text-xs text-slate-500" aria-live="polite">auto-refresh in 05:00</span>
                   <label class="text-xs text-slate-600 flex items-center gap-1"><input id="pauseRefresh" type="checkbox" class="align-middle"> Pause</label>
+                  <label class="text-xs text-slate-600 flex items-center gap-1"><input id="runQuarterly" type="checkbox" class="align-middle"> Quarterly</label>
                   <button id="refreshBtn" class="px-3 py-2 bg-yellow-400 text-slate-900 rounded">Refresh Selected</button>
                 </div>
               </div>
@@ -732,6 +965,7 @@ app.get('/index', async (req, res) => {
             const refreshTicker = document.getElementById('refreshTicker');
             const currencyByRegion = { CPH: 'DKK', HEL: 'EUR', STO: 'SEK' };
             const aumByRegion = { CPH: 110000000000, HEL: 22000000000, STO: 450000000000 };
+            let selectedMeta = { ccy: '', aum: null };
             let dailyRowsCache = [];
             let quarterlyRowsCache = [];
             let dailyLimit = 25;
@@ -770,14 +1004,27 @@ app.get('/index', async (req, res) => {
               });
               return out;
             }
-            // Select index via buttons
-            btns.forEach(btn => btn.addEventListener('click', () => { selected = btn.getAttribute('data-idx'); loadAll(); }));
+            // Select index via buttons and highlight active
+            function setActive(){
+              btns.forEach(b=>{
+                if (b.getAttribute('data-idx') === selected) {
+                  b.classList.add('bg-blue-600','text-white');
+                  b.classList.remove('bg-white');
+                } else {
+                  b.classList.remove('bg-blue-600','text-white');
+                }
+              });
+            }
+            btns.forEach(btn => btn.addEventListener('click', () => { selected = btn.getAttribute('data-idx'); setActive(); loadAll(); }));
+            setActive();
             // Trigger Python worker refresh for selected
             refreshBtn?.addEventListener('click', async () => {
               try {
                 const idx = selected;
                 const region = regionFor(idx);
-                const r = await fetch('/api/kaxcap/run?region=' + encodeURIComponent(region) + '&indexId=' + encodeURIComponent(idx), { method: 'POST' });
+                const q = document.getElementById('runQuarterly');
+                const quarterlyParam = (q && q.checked) ? '&quarterly=true' : '';
+                const r = await fetch('/api/kaxcap/run?region=' + encodeURIComponent(region) + '&indexId=' + encodeURIComponent(idx) + quarterlyParam, { method: 'POST' });
                 const json = await r.json();
                 document.getElementById('meta').textContent = 'Refresh triggered for ' + selected + (json.ok ? ' — OK' : (' — Error: ' + (json.error || 'unknown')));
                 setTimeout(loadAll, 1200);
@@ -788,9 +1035,24 @@ app.get('/index', async (req, res) => {
 
             async function loadAll() {
               document.getElementById('meta').textContent = 'Loading ' + selected + '…';
+              await loadMeta();
               await Promise.all([loadQuarterly(), loadDaily()]);
               document.getElementById('meta').textContent = 'Loaded ' + selected;
               nextRefreshSec = 300;
+            }
+
+            async function loadMeta(){
+              try {
+                const r = await fetch('/api/index/' + selected + '/meta');
+                const j = await r.json();
+                if (j && (j.currency || j.aum)) {
+                  selectedMeta = { ccy: j.currency || '', aum: (typeof j.aum === 'number' ? j.aum : null) };
+                  return;
+                }
+              } catch(e) {}
+              // Fallback to region defaults if API/meta not available
+              const region = regionFor(selected);
+              selectedMeta = { ccy: currencyByRegion[region] || '', aum: aumByRegion[region] || null };
             }
 
             async function loadQuarterly() {
@@ -799,8 +1061,8 @@ app.get('/index', async (req, res) => {
                 const json = await r.json();
                 const rows = json.rows || [];
                 const region = regionFor(selected);
-                const aum = aumByRegion[region] || null;
-                const ccy = currencyByRegion[region] || '';
+                const aum = (selectedMeta.aum != null ? selectedMeta.aum : (aumByRegion[region] || null));
+                const ccy = selectedMeta.ccy || currencyByRegion[region] || '';
                 document.getElementById('quarterlyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Rows: ' + rows.length + ' · AUM (' + (ccy || 'CCY') + '): ' + (aum ? aum.toLocaleString('en-DK') : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/quarterly">JSON</a>';
                 quarterlyRowsCache = rows.slice();
                 function getQuarterlyVal(row){
@@ -842,8 +1104,8 @@ app.get('/index', async (req, res) => {
                   return '<tr class="border-b">'
                     + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + issuer + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (mcapBn != null ? mcapBn.toFixed(2) : '') + '</td>'
-                    + '<td class="px-3 py-2 text-sm text-right" title="' + (currWPct!=null? currWPct.toFixed(4)+'%':'') + '">' + (currWPct != null ? currWPct.toFixed(2) + '%' : '') + '</td>'
-                    + '<td class="px-3 py-2 text-sm text-right" title="' + (newWPct!=null? newWPct.toFixed(4)+'%':'') + '">' + (newWPct != null ? newWPct.toFixed(2) + '%' : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm text-right" title="' + (currWPct!=null? currWPct.toFixed(2)+'%':'') + '">' + (currWPct != null ? currWPct.toFixed(2) + '%' : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm text-right" title="' + (newWPct!=null? newWPct.toFixed(2)+'%':'') + '">' + (newWPct != null ? newWPct.toFixed(2) + '%' : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right ' + deltaClass + '">' + (deltaPct != null ? deltaPct.toFixed(2) + '%' : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (deltaAmt != null ? Math.round(deltaAmt).toLocaleString('en-DK') : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (deltaVol != null ? deltaVol.toFixed(2) : '') + '</td>'
@@ -885,7 +1147,7 @@ app.get('/index', async (req, res) => {
                       const deltaVol = (r.delta_vol != null) ? Number(r.delta_vol).toFixed(2) : '';
                       const dtc = (r.days_to_cover != null) ? Number(r.days_to_cover).toFixed(2) : '';
                       return [JSON.stringify(issuer), mcapBn, currWPct, newWPct, deltaPct, deltaAmt, deltaVol, dtc].join(',');
-                    })).join('\n');
+                    })).join('\\n');
                     const blob = new Blob([csv], {type:'text/csv'});
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a'); a.href=url; a.download=selected+'_quarterly.csv'; a.click(); URL.revokeObjectURL(url);
@@ -918,8 +1180,8 @@ app.get('/index', async (req, res) => {
                 document.getElementById('dailyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Rows: ' + rows.length + ' · Sum(weight): ' + (totalW ? totalW.toFixed(6) : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/constituents">JSON</a>';
                 const top = rows.slice(0, 25);
                 const region = regionFor(selected);
-                const aum = aumByRegion[region] || null;
-                const ccy = currencyByRegion[region] || '';
+                const aum = (selectedMeta.aum != null ? selectedMeta.aum : (aumByRegion[region] || null));
+                const ccy = selectedMeta.ccy || currencyByRegion[region] || '';
                 dailyRowsCache = rows.slice();
                 const sorted = sortRows(dailyRowsCache, (r)=> Number(r.capped_weight ?? r.weight ?? 0), dailySort.dir);
                 const topN = sorted.slice(0, dailyLimit);
@@ -935,16 +1197,18 @@ app.get('/index', async (req, res) => {
                   const deltaPct = (deltaFrac != null) ? (deltaFrac * 100) : null;
                   const deltaAmt = (aum && deltaFrac != null) ? (aum * deltaFrac) : null;
                   const deltaVolShares = (deltaAmt != null && r.price != null) ? (deltaAmt / Number(r.price)) : null;
-                  const dtc = (deltaVolShares != null && r.avg_daily_volume != null) ? (Math.abs(deltaVolShares) / Number(r.avg_daily_volume)) : null;
-                  const id = 'row-' + sanitizeId(r.issuer || r.ticker || '');
+                  const adv = (r.avg_daily_volume != null ? Number(r.avg_daily_volume) : null);
+                  const dtc = (deltaVolShares != null && adv != null && adv > 0) ? (Math.abs(deltaVolShares) / adv) : null;
+                  const displayName = (r.name || r.issuer || r.ticker || '');
+                  const id = 'row-' + sanitizeId(displayName);
                   const deltaClass = (deltaPct!=null && deltaPct>0) ? 'text-green-700' : (deltaPct!=null && deltaPct<0 ? 'text-red-700' : '');
                   const cutPill = flags.includes('40% breach') ? '<span class="ml-2 inline-block px-2 py-0.5 rounded-full text-xs bg-red-100 text-red-800">cut candidate</span>' : '';
                   return (
                     '<tr id="' + id + '" class="border-b ' + rowClass + '">'
-                    + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + (r.issuer || '') + cutPill + '</td>'
+                    + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + displayName + cutPill + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (mcapBn != null ? mcapBn.toFixed(2) : '') + '</td>'
-                    + '<td class="px-3 py-2 text-sm text-right" title="' + (wPct!=null? wPct.toFixed(4)+'%':'') + '">' + (wPct != null ? wPct.toFixed(2) + '%' : '') + '</td>'
-                    + '<td class="px-3 py-2 text-sm text-right" title="' + (cwPct!=null? cwPct.toFixed(4)+'%':'') + '">' + (cwPct != null ? cwPct.toFixed(2) + '%' : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm text-right" title="' + (wPct!=null? wPct.toFixed(2)+'%':'') + '">' + (wPct != null ? wPct.toFixed(2) + '%' : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm text-right" title="' + (cwPct!=null? cwPct.toFixed(2)+'%':'') + '">' + (cwPct != null ? cwPct.toFixed(2) + '%' : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right ' + deltaClass + '">' + (deltaPct != null ? deltaPct.toFixed(2) + '%' : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (deltaAmt != null ? Math.round(deltaAmt).toLocaleString('en-DK') : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (dtc != null ? dtc.toFixed(2) : '') + '</td>'
@@ -958,8 +1222,9 @@ app.get('/index', async (req, res) => {
                   document.getElementById('dailyBadge').textContent = (flagged.length || 0);
                   if (flagged.length > 0) {
                     const items = flagged.slice(0, 8).map(r => {
-                      const id = 'row-' + sanitizeId(r.issuer || r.ticker || '');
-                      return '<li class="text-sm"><a href="#' + id + '" class="hover:underline"><span class="inline-block px-2 py-0.5 rounded bg-red-100 text-red-800 mr-2" aria-label="flag">' + (r.flags || '') + '</span>' + (r.issuer || r.ticker || '') + '</a></li>';
+                      const name = (r.name || r.issuer || r.ticker || '');
+                      const id = 'row-' + sanitizeId(name);
+                      return '<li class="text-sm"><a href="#' + id + '" class="hover:underline"><span class="inline-block px-2 py-0.5 rounded bg-red-100 text-red-800 mr-2" aria-label="flag">' + (r.flags || '') + '</span>' + name + '</a></li>';
                     }).join('');
                     document.getElementById('dailyWarnings').innerHTML = '<div class="p-3 border border-red-200 rounded bg-red-50" aria-label="Warnings"><div class="text-sm font-semibold text-red-800 mb-1">Warnings: ' + flagged.length + ' breach' + (flagged.length !== 1 ? 'es' : '') + ' detected</div><ul class="space-y-1">' + items + '</ul></div>';
                   } else {
@@ -978,10 +1243,10 @@ app.get('/index', async (req, res) => {
                 } catch (e) {}
                 // Table with controls
                 const controls = '<div class="flex items-center gap-2 mb-2"><button id="dailyTop25" class="px-2 py-1 border rounded text-xs">Top 25</button><button id="dailyTop100" class="px-2 py-1 border rounded text-xs">Show 100</button><button id="dailyCsv" class="px-2 py-1 border rounded text-xs">Export CSV</button></div>';
-                document.getElementById('dailyTable').innerHTML = controls + '<div class="overflow-auto"><table class="w-full text-left"><thead class="bg-gray-100"><tr><th class="px-3 py-2 sticky left-0 bg-gray-100 cursor-pointer" data-dsort="issuer">Issuer</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="mcap">Market Cap, bn</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="weight">Weight</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="capped_weight">Capped Weight</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="delta_pct">Delta, %</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="delta_amt">Delta, ' + (ccy || 'Amt') + '</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="dtc">Days to Cover</th><th class="px-3 py-2">Flags</th></tr></thead><tbody>' + (trs || '<tr><td class="px-3 py-4 text-sm text-slate-500" colspan="8">No data.</td></tr>') + '</tbody></table></div>';
+                document.getElementById('dailyTable').innerHTML = controls + '<div class="overflow-auto"><table class="w-full text-left"><thead class="bg-gray-100"><tr><th class="px-3 py-2 sticky left-0 bg-gray-100 cursor-pointer" data-dsort="issuer">Company Name</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="mcap">Market Cap, bn</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="weight">Weight</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="capped_weight">Capped Weight</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="delta_pct">Delta, %</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="delta_amt">Delta, ' + (ccy || 'Amt') + '</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="dtc">Days to Cover</th><th class="px-3 py-2">Flags</th></tr></thead><tbody>' + (trs || '<tr><td class="px-3 py-4 text-sm text-slate-500" colspan="8">No data.</td></tr>') + '</tbody></table></div>';
                 // Header click sorting (Daily)
                 function getDailyVal(row){
-                  const issuer = (row.issuer || row.ticker || '').toLowerCase();
+                  const issuer = (row.name || row.issuer || row.ticker || '').toLowerCase();
                   const mcap = (row.market_cap != null ? Number(row.market_cap) : (row.mcap != null ? Number(row.mcap) : null));
                   const weight = (row.weight != null ? Number(row.weight) : null);
                   const cweight = (row.capped_weight != null ? Number(row.capped_weight) : null);
@@ -1023,16 +1288,18 @@ app.get('/index', async (req, res) => {
                       const deltaPct = (deltaFrac != null) ? (deltaFrac * 100) : null;
                       const deltaAmt2 = (aum && deltaFrac != null) ? (aum * deltaFrac) : null;
                       const deltaVolShares = (deltaAmt2 != null && r.price != null) ? (deltaAmt2 / Number(r.price)) : null;
-                      const dtc2 = (deltaVolShares != null && r.avg_daily_volume != null) ? (Math.abs(deltaVolShares) / Number(r.avg_daily_volume)) : null;
-                      const id = 'row-' + sanitizeId(r.issuer || r.ticker || '');
+                      const adv2 = (r.avg_daily_volume != null ? Number(r.avg_daily_volume) : null);
+                      const dtc2 = (deltaVolShares != null && adv2 != null && adv2 > 0) ? (Math.abs(deltaVolShares) / adv2) : null;
+                      const name = (r.name || r.issuer || r.ticker || '');
+                      const id = 'row-' + sanitizeId(name);
                       const deltaClass = (deltaPct!=null && deltaPct>0) ? 'text-green-700' : (deltaPct!=null && deltaPct<0 ? 'text-red-700' : '');
                       const cutPill = flags.includes('40% breach') ? '<span class="ml-2 inline-block px-2 py-0.5 rounded-full text-xs bg-red-100 text-red-800">cut candidate</span>' : '';
                       return (
                         '<tr id="' + id + '" class="border-b ' + rowClass + '">'
                         + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + (r.issuer || '') + cutPill + '</td>'
                         + '<td class="px-3 py-2 text-sm text-right">' + (mcapBn != null ? mcapBn.toFixed(2) : '') + '</td>'
-                        + '<td class="px-3 py-2 text-sm text-right" title="' + (wPct!=null? wPct.toFixed(4)+'%':'') + '">' + (wPct != null ? wPct.toFixed(2) + '%' : '') + '</td>'
-                        + '<td class="px-3 py-2 text-sm text-right" title="' + (cwPct!=null? cwPct.toFixed(4)+'%':'') + '">' + (cwPct != null ? cwPct.toFixed(2) + '%' : '') + '</td>'
+                        + '<td class="px-3 py-2 text-sm text-right" title="' + (wPct!=null? wPct.toFixed(2)+'%':'') + '">' + (wPct != null ? wPct.toFixed(2) + '%' : '') + '</td>'
+                        + '<td class="px-3 py-2 text-sm text-right" title="' + (cwPct!=null? cwPct.toFixed(2)+'%':'') + '">' + (cwPct != null ? cwPct.toFixed(2) + '%' : '') + '</td>'
                         + '<td class="px-3 py-2 text-sm text-right ' + deltaClass + '">' + (deltaPct != null ? deltaPct.toFixed(2) + '%' : '') + '</td>'
                         + '<td class="px-3 py-2 text-sm text-right">' + (deltaAmt2 != null ? Math.round(deltaAmt2).toLocaleString('en-DK') : '') + '</td>'
                         + '<td class="px-3 py-2 text-sm text-right">' + (dtc2 != null ? dtc2.toFixed(2) : '') + '</td>'
@@ -1049,17 +1316,18 @@ app.get('/index', async (req, res) => {
                 document.getElementById('dailyTop100').onclick = ()=>{ dailyLimit=100; loadDaily(); };
                 document.getElementById('dailyCsv').onclick = ()=>{
                   try {
-                    const header = ['issuer','mcap_bn','weight_pct','capped_weight_pct','delta_pct','delta_amt','dtc'];
+                    const header = ['company_name','mcap_bn','weight_pct','capped_weight_pct','delta_pct','delta_amt','dtc'];
                     const csv = [header.join(',')].concat(topN.map(r=>{
                       const mcapBn = (r.mcap!=null? Number(r.mcap)/1e9 : (r.mcap_uncapped!=null? Number(r.mcap_uncapped)/1e9: ''));
-                      const w = (r.weight!=null? (Number(r.weight)*100).toFixed(4): '');
-                      const cw = (r.capped_weight!=null? (Number(r.capped_weight)*100).toFixed(4): '');
+                      const w = (r.weight!=null? (Number(r.weight)*100).toFixed(2): '');
+                      const cw = (r.capped_weight!=null? (Number(r.capped_weight)*100).toFixed(2): '');
                       const d = (typeof r.delta_pct==='number'? (Number(r.delta_pct)*100).toFixed(2): '');
                       const da = (typeof r.delta_pct==='number' && aum? Math.round(aum*Number(r.delta_pct)).toString(): '');
                       const deltaVolShares = (typeof r.delta_pct==='number' && r.price!=null? (aum*Number(r.delta_pct)/Number(r.price)): null);
-                      const dtcV = (deltaVolShares!=null && r.avg_daily_volume!=null? (Math.abs(deltaVolShares)/Number(r.avg_daily_volume)).toFixed(2): '');
-                      return [JSON.stringify(r.issuer||''), mcapBn, w, cw, d, da, dtcV].join(',');
-                    })).join('\n');
+                      const adv = (r.avg_daily_volume!=null? Number(r.avg_daily_volume): null);
+                      const dtcV = (deltaVolShares!=null && adv!=null && adv>0? (Math.abs(deltaVolShares)/adv).toFixed(2): '');
+                      return [JSON.stringify(r.name||r.issuer||r.ticker||''), mcapBn, w, cw, d, da, dtcV].join(',');
+                    })).join('\\n');
                     const blob = new Blob([csv], {type:'text/csv'});
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a'); a.href=url; a.download=selected+'_daily.csv'; a.click(); URL.revokeObjectURL(url);
@@ -1421,15 +1689,27 @@ app.post('/api/rebalancer/compute', async (req, res) => {
     if ((!Array.isArray(data) || data.length === 0) && supabase) {
       try {
         const tableName = tableForIndex(indexId);
-        const { data: rows, error } = await supabase.from(tableName).select('*');
+        // Pull only the latest snapshot and avoid duplicates
+        const { data: dates, error: err1 } = await supabase
+          .from(tableName)
+          .select('as_of')
+          .order('as_of', { ascending: false })
+          .limit(1);
+        if (err1) throw err1;
+        const asOf = dates && dates[0] ? dates[0].as_of : null;
+        const { data: rows, error } = await supabase
+          .from(tableName)
+          .select('*')
+          .eq('as_of', asOf)
+          .order('capped_weight', { ascending: false });
         if (!error && Array.isArray(rows) && rows.length > 0) {
           data = rows.map(r => ({
             ticker: r.ticker,
-            issuer: r.issuer || r.ticker,
+            issuer: r.name || r.issuer || r.ticker,
             price: r.price,
             mcap: Number(r.mcap || r.market_cap || 0),
             avg_30d_volume: r.avg_daily_volume || 0,
-            currentWeight: Number(r.weight || r.capped_weight || 0)
+            currentWeight: Number(r.capped_weight || r.weight || 0)
           }));
         }
       } catch (e) {
@@ -1578,6 +1858,20 @@ app.post('/api/memes', async (req, res) => {
   }
 });
 
+// Minimal debug endpoint to verify Supabase env presence (no secrets leaked)
+app.get('/api/debug/env', (req, res) => {
+  const supUrl = process.env.SUPABASE_URL;
+  const supKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+  const python = process.env.PYTHON || 'python3';
+  res.json({
+    ok: true,
+    supabase_configured: Boolean(supUrl && supKey),
+    supabase_url_present: Boolean(supUrl),
+    supabase_key_present: Boolean(supKey),
+    python_cmd: python
+  });
+});
+
 // Product page: Rebalancer dashboard
 app.get('/product/rebalancer', async (req, res) => {
   try {
@@ -1657,16 +1951,25 @@ app.get('/product/rebalancer', async (req, res) => {
         document.getElementById('resultsMeta').textContent =
           'Generated: ' + (meta.generated_at || '') + ' — Method: ' + (meta.method || '');
         const rows = proposal.proposed || [];
-        rows.sort((a,b) => (b.newWeight || 0) - (a.newWeight || 0));
-        const top = rows.slice(0, 200);
+        // Group by issuer to avoid double-counting multiple tickers/classes
+        const grouped = {};
+        for (const r of rows) {
+          const key = String(r.issuer || '').trim();
+          if (!grouped[key]) grouped[key] = { issuer: key, oldWeight: 0, newWeight: 0, capped: false };
+          grouped[key].oldWeight += Number(r.oldWeight || 0);
+          grouped[key].newWeight += Number(r.newWeight || 0);
+          grouped[key].capped = grouped[key].capped || !!r.capped;
+        }
+        const agg = Object.values(grouped);
+        agg.sort((a,b) => (b.newWeight || 0) - (a.newWeight || 0));
+        const top = agg.slice(0, 200);
 
         // Build without template literals to avoid nested backticks
         const tableRows = top.map(function(r) {
           return '<tr class="border-b">'
-            + '<td class="px-3 py-2 font-mono text-sm">' + (r.ticker || '') + '</td>'
             + '<td class="px-3 py-2 text-sm">' + (r.issuer || '') + '</td>'
-            + '<td class="px-3 py-2 text-sm">' + ((r.oldWeight || 0).toFixed(6)) + '</td>'
-            + '<td class="px-3 py-2 text-sm">' + ((r.newWeight || 0).toFixed(6)) + '</td>'
+            + '<td class="px-3 py-2 text-sm">' + ((r.oldWeight || 0) * 100).toFixed(2) + '%</td>'
+            + '<td class="px-3 py-2 text-sm">' + ((r.newWeight || 0) * 100).toFixed(2) + '%</td>'
             + '<td class="px-3 py-2 text-sm">' + (r.capped ? '<span class="text-red-600 font-semibold">capped</span>' : '') + '</td>'
             + '</tr>';
         }).join('');
@@ -1674,7 +1977,7 @@ app.get('/product/rebalancer', async (req, res) => {
         document.getElementById('resultsTable').innerHTML =
           '<div class="overflow-auto">'
           + '<table class="w-full text-left">'
-          + '<thead><tr class="bg-gray-100"><th class="px-3 py-2">Ticker</th><th class="px-3 py-2">Issuer</th><th class="px-3 py-2">Old W</th><th class="px-3 py-2">New W</th><th class="px-3 py-2">Flags</th></tr></thead>'
+          + '<thead><tr class="bg-gray-100"><th class="px-3 py-2">Issuer</th><th class="px-3 py-2">Old W</th><th class="px-3 py-2">New W</th><th class="px-3 py-2">Flags</th></tr></thead>'
           + '<tbody>' + tableRows + '</tbody>'
           + '</table>'
           + '</div>';
@@ -1851,12 +2154,16 @@ app.listen(PORT, () => {
   // Run FactSet worker batch once on startup to populate tables
   (async () => {
     try {
-      const pythonCmd = process.env.PYTHON || 'python3';
+      let pythonCmd = process.env.PYTHON || 'python3';
+      try {
+        const venvPy = path.join(__dirname, '.venv', 'bin', process.platform === 'win32' ? 'python.exe' : 'python');
+        if (fs.existsSync(venvPy)) pythonCmd = venvPy;
+      } catch { }
       const scriptPath = path.join(__dirname, 'workers', 'indexes', 'main.py');
       const runs = [
         { region: 'CPH', indexId: process.env.CPH_INDEX_ID || 'KAXCAP' },
-        { region: 'HEL', indexId: process.env.HEL_INDEX_ID || 'HELXCAP' },
-        { region: 'STO', indexId: process.env.STO_INDEX_ID || 'OMXSALLS' }
+        { region: 'HEL', indexId: process.env.HEL_INDEX_ID || 'HELXCAP' }
+        // Stockholm paused
       ];
       for (const r of runs) {
         await new Promise((resolve) => {
@@ -1916,8 +2223,8 @@ try {
       const scriptPath = path.join(__dirname, 'workers', 'indexes', 'main.py');
       const runs = [
         { region: 'CPH', indexId: process.env.CPH_INDEX_ID || 'KAXCAP' },
-        { region: 'HEL', indexId: process.env.HEL_INDEX_ID || 'HELXCAP' },
-        { region: 'STO', indexId: process.env.STO_INDEX_ID || 'OMXSALLS' }
+        { region: 'HEL', indexId: process.env.HEL_INDEX_ID || 'HELXCAP' }
+        // Stockholm paused
       ];
       for (const r of runs) {
         await new Promise((resolve) => {

@@ -1,0 +1,31 @@
+[loader] loaded VA watcher from /Users/tobias/Desktop/PROG/VA OPAL Scraper/projects/analyst-scraper/watchers/va.js
+[loader] loaded Sundhedsdatabank watcher from /Users/tobias/Desktop/PROG/VA OPAL Scraper/projects/analyst-scraper/watchers/sundhedsdatabank.js
+[scheduler] cron scheduled: every 4 hours (Europe/Copenhagen)
+🌐 Server running on port 3000
+[⏰] 2026-01-20T15:00:33.855Z — Cron triggered: checkVA()
+[🔍] VA: Checking for updated month...
+[⏰] 2026-01-20T15:00:33.876Z — Cron triggered: checkEsundhed()
+[🔍] Checking eSundhed for updated report...
+[🧾] Loaded Sundhedsdatabank page
+[📁] Found file: Vægttabs- og diabetesmedicin 2022-2025 (Udgivet 12. januar 2026).xlsx
+[🔗] Full URL: https://cdn1.gopublic.dk/sundhedsdatastyrelsen/Media/639038023584956710/V%C3%A6gttabs-%20og%20diabetesmedicin%202022-2025%20(Udgivet%2012.%20januar%202026).xlsx
+[ℹ] Other XLSX candidates: [
+  'https://cdn1.gopublic.dk/sundhedsdatastyrelsen/Media/638908550705257467/Antibiotika for hele Danmark, 1999-2024 (udgivet 14. feb. 2025).xlsx',
+  'https://cdn1.gopublic.dk/sundhedsdatastyrelsen/Media/638908550687440975/Antibiotika fordelt på kommuner, 2000-2024 (udgivet 14. feb. 2025).xlsx',
+  'https://cdn1.gopublic.dk/sundhedsdatastyrelsen/Media/638908551405238163/Antibiotika fordelt på regioner, 2019-2024 (udgivet 14. feb 2025).xlsx',
+  'https://cdn1.gopublic.dk/sundhedsdatastyrelsen/Media/638908551047794945/Antibiotika fordelt på lægetype, indikation og regioner, 2019-2024 (udgivet 14. feb 2025).xlsx',
+  'https://cdn1.gopublic.dk/sundhedsdatastyrelsen/Media/638908550750109900/Antibiotika fordelt på lægetype og indikation for hele Danmark, 2019-2024 (udgivet 14. feb 2025).xlsx',
+  'https://cdn1.gopublic.dk/sundhedsdatastyrelsen/Media/639038023584956710/Vægttabs- og diabetesmedicin 2022-2025 (Udgivet 12. januar 2026).xlsx',
+  'https://cdn1.gopublic.dk/sundhedsdatastyrelsen/Media/639035412533458746/Dosispakket medicin pr md, 2021-2025_nov (udgivet 9. januar).XLSX',
+  'https://cdn1.gopublic.dk/sundhedsdatastyrelsen/Media/638948973714528255/Dosispakket medicin pr år, 2007-2024 (udgivet 2. februar 2025).xlsx'
+]
+[🧮] Computed hash: f9fcb2c589297c8ba592635486c064f3b8ebaa68fb1c089f9b874e5c8c84452f
+[🧪 Final Check] {
+  fileName: 'Vægttabs- og diabetesmedicin 2022-2025 (Udgivet 12. januar 2026).xlsx',
+  hash: 'f9fcb2c589297c8ba592635486c064f3b8ebaa68fb1c089f9b874e5c8c84452f',
+  lastHash: 'f9fcb2c589297c8ba592635486c064f3b8ebaa68fb1c089f9b874e5c8c84452f',
+  isNew: false
+}
+[🟰] Report already recorded. Skipping. Same hash: f9fcb2c589297c8ba592635486c064f3b8ebaa68fb1c089f9b874e5c8c84452f
+[🧮] VA Hash: 798aecc1c482227529d22abb33f40f794f55d4593635b1bd58b7fa3063ea5083
+[🟰] VA: Already recorded for December

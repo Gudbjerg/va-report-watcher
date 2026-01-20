@@ -32,7 +32,6 @@ WHITELIST_COLUMNS = {
     "avg_daily_volume",
     "as_of",
     "source",
-    "flags",
 }
 
 
@@ -88,10 +87,11 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
     normalized_payload = []
     for row in raw_payload:
         r = dict(row)
+        # Keep delta_pct so daily pages can render deltas
         # Prefer explicit daily volume in shares; support millions-based alias
         if "avg_daily_volume" not in r:
             if "avg_vol_30d" in r:
-                r["avg_daily_volume"] = r["avg_vol_30d"]
+                r["avg_daily_volume"] = r.get("avg_vol_30d")
             elif "avg_vol_30d_millions" in r:
                 # Convert millions to shares (big number)
                 try:
@@ -99,6 +99,7 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
                         r.get("avg_vol_30d_millions", 0.0)) * 1_000_000.0
                 except Exception:
                     r["avg_daily_volume"] = None
+        # Clean up aliases and non-persisted fields
         r.pop("avg_vol_30d", None)
         r.pop("issuer", None)
         r.pop("region", None)
@@ -106,7 +107,8 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
         r.pop("shares_capped", None)
         r.pop("mcap_uncapped", None)
         r.pop("mcap_capped", None)
-        for num_key in ("price", "shares", "mcap", "weight", "capped_weight", "avg_daily_volume"):
+        # Normalize numbers
+        for num_key in ("price", "shares", "mcap", "weight", "capped_weight", "delta_pct", "avg_daily_volume"):
             if num_key in r and r[num_key] is not None:
                 try:
                     r[num_key] = float(r[num_key])
@@ -114,8 +116,30 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
                         r[num_key] = None
                 except Exception:
                     r[num_key] = None
+        # Normalize name
+        if "name" in r and r["name"] is not None:
+            try:
+                r["name"] = str(r["name"]).strip()
+            except Exception:
+                r["name"] = None
+        # Normalize as_of to ISO string
+        if "as_of" in r and r["as_of"] is not None:
+            try:
+                val = r["as_of"]
+                if isinstance(val, (pd.Timestamp,)):
+                    r["as_of"] = val.isoformat()
+                else:
+                    # Support datetime/date or plain string/number
+                    try:
+                        r["as_of"] = pd.to_datetime(val).isoformat()
+                    except Exception:
+                        r["as_of"] = str(val)
+            except Exception:
+                pass
         r.setdefault("source", "factset")
-        normalized_payload.append(r)
+        # Always trim payload to whitelist columns to avoid 400s
+        trimmed = {k: r.get(k) for k in WHITELIST_COLUMNS}
+        normalized_payload.append(trimmed)
 
     if _create_supabase_client is not None:
         try:
@@ -157,18 +181,8 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
     if insert_resp.ok:
         print(f"Inserted {len(normalized_payload)} rows into {table_name}.")
         return
-    print("Insert failed (first attempt):",
-          insert_resp.status_code, insert_resp.text)
-    trimmed_payload = [{k: v for k, v in row.items() if k in WHITELIST_COLUMNS}
-                       for row in normalized_payload]
-    insert_resp2 = _do_insert(trimmed_payload)
-    if insert_resp2.ok:
-        print(
-            f"Inserted {len(trimmed_payload)} rows into {table_name} (trimmed whitelist).")
-        return
-    print("Insert failed (second attempt):",
-          insert_resp2.status_code, insert_resp2.text)
-    insert_resp2.raise_for_status()
+    print("Insert failed:", insert_resp.status_code, insert_resp.text)
+    insert_resp.raise_for_status()
 
 
 def upsert_index_quarterly(df_pro: pd.DataFrame) -> None:
@@ -195,6 +209,10 @@ def upsert_index_quarterly(df_pro: pd.DataFrame) -> None:
     normalized_payload = []
     for row in raw_payload:
         r = dict(row)
+        # Remove fields not present in per-index quarterly tables
+        for drop_key in ("index_id", "region", "issuer"):
+            if drop_key in r:
+                r.pop(drop_key, None)
         # Ensure numeric
         for num_key in (
             "price",
@@ -220,6 +238,15 @@ def upsert_index_quarterly(df_pro: pd.DataFrame) -> None:
                         r[num_key] = None
                 except Exception:
                     r[num_key] = None
+        # Normalize as_of to ISO string
+        if "as_of" in r and r["as_of"] is not None:
+            try:
+                r["as_of"] = pd.to_datetime(r["as_of"]).isoformat()
+            except Exception:
+                try:
+                    r["as_of"] = str(r["as_of"])
+                except Exception:
+                    pass
         normalized_payload.append(r)
 
     # Delete existing for as_of then insert

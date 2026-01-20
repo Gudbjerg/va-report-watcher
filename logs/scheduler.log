@@ -26,3 +26,175 @@ Traceback (most recent call last):
     import pandas as pd
 ModuleNotFoundError: No module named 'pandas'
 
+[2026-01-20T12:13:51.888Z] startup FactSet error region=CPH index=KAXCAP: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region CPH --index-id KAXCAP
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 75, in <module>
+    run_update()
+    ~~~~~~~~~~^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 35, in run_update
+    upsert_index_constituents(df_status)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/supabase_client.py", line 171, in upsert_index_constituents
+    insert_resp2.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/.venv/lib/python3.13/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://gxxenoyhsafrpjmfyuwf.supabase.co/rest/v1/index_constituents_kaxcap
+
+[2026-01-20T12:13:56.778Z] startup FactSet error region=HEL index=HELXCAP: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region HEL --index-id HELXCAP
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 75, in <module>
+    run_update()
+    ~~~~~~~~~~^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 35, in run_update
+    upsert_index_constituents(df_status)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/supabase_client.py", line 171, in upsert_index_constituents
+    insert_resp2.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/.venv/lib/python3.13/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://gxxenoyhsafrpjmfyuwf.supabase.co/rest/v1/index_constituents_helxcap
+
+[2026-01-20T12:14:01.741Z] startup FactSet error region=STO index=OMXSALLS: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region STO --index-id OMXSALLS
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 75, in <module>
+    run_update()
+    ~~~~~~~~~~^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 35, in run_update
+    upsert_index_constituents(df_status)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/supabase_client.py", line 171, in upsert_index_constituents
+    insert_resp2.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/.venv/lib/python3.13/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://gxxenoyhsafrpjmfyuwf.supabase.co/rest/v1/index_constituents_omxsalls
+
+[2026-01-20T12:26:52.963Z] startup FactSet error region=CPH index=KAXCAP: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region CPH --index-id KAXCAP
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 75, in <module>
+    run_update()
+    ~~~~~~~~~~^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 35, in run_update
+    upsert_index_constituents(df_status)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/supabase_client.py", line 172, in upsert_index_constituents
+    insert_resp2.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/.venv/lib/python3.13/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://gxxenoyhsafrpjmfyuwf.supabase.co/rest/v1/index_constituents_kaxcap
+
+[2026-01-20T12:26:57.430Z] startup FactSet error region=HEL index=HELXCAP: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region HEL --index-id HELXCAP
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 75, in <module>
+    run_update()
+    ~~~~~~~~~~^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 35, in run_update
+    upsert_index_constituents(df_status)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/supabase_client.py", line 172, in upsert_index_constituents
+    insert_resp2.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/.venv/lib/python3.13/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://gxxenoyhsafrpjmfyuwf.supabase.co/rest/v1/index_constituents_helxcap
+
+[2026-01-20T12:27:02.319Z] startup FactSet error region=STO index=OMXSALLS: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region STO --index-id OMXSALLS
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 75, in <module>
+    run_update()
+    ~~~~~~~~~~^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 35, in run_update
+    upsert_index_constituents(df_status)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/supabase_client.py", line 172, in upsert_index_constituents
+    insert_resp2.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/.venv/lib/python3.13/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://gxxenoyhsafrpjmfyuwf.supabase.co/rest/v1/index_constituents_omxsalls
+
+[2026-01-20T13:12:02.311Z] startup FactSet error region=CPH index=KAXCAP: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region CPH --index-id KAXCAP
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 6, in <module>
+    from factset_client import fetch_index_raw
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/factset_client.py", line 6, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+
+[2026-01-20T13:12:02.344Z] startup FactSet error region=HEL index=HELXCAP: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region HEL --index-id HELXCAP
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 6, in <module>
+    from factset_client import fetch_index_raw
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/factset_client.py", line 6, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+
+[2026-01-20T13:12:02.379Z] startup FactSet error region=STO index=OMXSALLS: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region STO --index-id OMXSALLS
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 6, in <module>
+    from factset_client import fetch_index_raw
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/factset_client.py", line 6, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+
+[2026-01-20T13:18:34.729Z] startup FactSet error region=CPH index=KAXCAP: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region CPH --index-id KAXCAP
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 6, in <module>
+    from factset_client import fetch_index_raw
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/factset_client.py", line 6, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+
+[2026-01-20T13:18:34.766Z] startup FactSet error region=HEL index=HELXCAP: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region HEL --index-id HELXCAP
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 6, in <module>
+    from factset_client import fetch_index_raw
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/factset_client.py", line 6, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+
+[2026-01-20T13:18:34.800Z] startup FactSet error region=STO index=OMXSALLS: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region STO --index-id OMXSALLS
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 6, in <module>
+    from factset_client import fetch_index_raw
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/factset_client.py", line 6, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+
+[2026-01-20T13:20:00.011Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-20T13:20:03.958Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-20T13:20:08.450Z] startup FactSet ok region=STO index=OMXSALLS
+[2026-01-20T13:35:54.328Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-20T13:35:58.132Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-20T13:36:02.658Z] startup FactSet ok region=STO index=OMXSALLS
+[2026-01-20T15:00:00.619Z] scheduled run starting
+[2026-01-20T15:00:03.165Z] VA result: no-change or null
+[2026-01-20T15:00:03.936Z] eSundhed result: no-change or null
+[2026-01-20T15:00:03.987Z] FactSet run error region=CPH index=KAXCAP: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region CPH --index-id KAXCAP
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 6, in <module>
+    from factset_client import fetch_index_raw
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/factset_client.py", line 6, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+
+[2026-01-20T15:00:04.022Z] FactSet run error region=HEL index=HELXCAP: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region HEL --index-id HELXCAP
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 6, in <module>
+    from factset_client import fetch_index_raw
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/factset_client.py", line 6, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+
+[2026-01-20T15:00:04.055Z] FactSet run error region=STO index=OMXSALLS: Command failed: python3 /Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py --region STO --index-id OMXSALLS
+Traceback (most recent call last):
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/main.py", line 6, in <module>
+    from factset_client import fetch_index_raw
+  File "/Users/tobias/Desktop/PROG/VA OPAL Scraper/workers/indexes/factset_client.py", line 6, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+
+[2026-01-20T15:00:04.055Z] scheduled run complete (duration_ms=3440)

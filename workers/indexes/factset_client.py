@@ -69,6 +69,64 @@ def _universe_expr(region: str) -> str:
     return "(FG_CONSTITUENTS(187183,0,CLOSE))=1"
 
 
+def _get_rate_header(headers: Dict[str, str], key: str) -> str | None:
+    # Accept hyphen or underscore variants, case-insensitive
+    lk = key.lower()
+    for k, v in headers.items():
+        kl = k.lower().replace('_', '-')
+        if kl == lk:
+            return v
+    return None
+
+
+def _request_with_backoff(method: str, url: str, max_retries: int = 4, **kwargs):
+    """HTTP helper that retries on 429 using Retry-After or FactSet rate headers."""
+    import time
+    attempt = 0
+    while True:
+        r = requests.request(method.upper(), url, **kwargs)
+        # Log basic headers for visibility if present
+        try:
+            limit = _get_rate_header(
+                r.headers, 'X-FactSet-Api-RateLimit-Limit')
+            remaining = _get_rate_header(
+                r.headers, 'X-FactSet-Api-RateLimit-Remaining')
+            reset = _get_rate_header(
+                r.headers, 'X-FactSet-Api-RateLimit-Reset')
+            if limit or remaining:
+                print(
+                    f"[rate] limit={limit} remaining={remaining} reset={reset}")
+        except Exception:
+            pass
+        if r.status_code != 429 or attempt >= max_retries:
+            return r
+        # Determine wait time
+        retry_after = _get_rate_header(r.headers, 'Retry-After')
+        wait_s: float | None = None
+        if retry_after:
+            try:
+                wait_s = float(retry_after)
+            except Exception:
+                wait_s = None
+        if wait_s is None:
+            reset = _get_rate_header(
+                r.headers, 'X-FactSet-Api-RateLimit-Reset')
+            if reset:
+                try:
+                    # Some APIs send epoch seconds for reset
+                    reset_val = float(reset)
+                    now = time.time()
+                    wait_s = max(1.0, reset_val - now)
+                except Exception:
+                    wait_s = None
+        if wait_s is None:
+            wait_s = min(8.0, 1.5 * (2 ** attempt))
+        attempt += 1
+        print(
+            f"[rate] 429 received — backing off for {wait_s:.2f}s (attempt {attempt}/{max_retries})")
+        time.sleep(wait_s)
+
+
 def _build_formulas(region: str) -> Dict[str, Any]:
     r = (region or 'CPH').upper()
     # Allow runtime overrides via env; fall back to per-region defaults
@@ -101,7 +159,11 @@ def _build_formulas(region: str) -> Dict[str, Any]:
         'P_PRICE(0)',
         f'EXG_OMX_SHARES(0,{shares_symbol},PI,{ccy},ND)',
         f'EXG_OMX_WEIGHT(0,{weight_symbol},PI,{ccy},ND)',
-        'P_VOL_AVG(-1/0/0)'
+        # Preferred 30D average volumes (both units) — shares and millions
+        'P_VOLUME_AVG(0,-1/0/0,0)',   # actual shares (ones)
+        'P_VOLUME_AVG(0,-1/0/0)',     # in millions
+        # Fallback: latest daily volume in shares
+        'P_VOLUME(0)'
     ]
     # Include capped shares if available
     if capped_symbol:
@@ -151,13 +213,13 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
                 'universeExclusion': 'NONEQUITY',
             }
             url = FACTSET_FORMULA_URL + '?' + _up.urlencode(params, safe=",()")
-            r = requests.get(url, auth=(
+            r = _request_with_backoff('GET', url, auth=(
                 FACTSET_USERNAME, FACTSET_API_KEY), headers=headers, verify=verify_ssl)
         else:
             payload = {"data": {"universe": universe,
                                 "formulas": f["formulas"], "flatten": f["flatten"],
                                 "universeExclusion": ["NONEQUITY"]}}
-            r = requests.post(FACTSET_FORMULA_URL, auth=(
+            r = _request_with_backoff('POST', FACTSET_FORMULA_URL, auth=(
                 FACTSET_USERNAME, FACTSET_API_KEY), headers=headers, json=payload, verify=verify_ssl)
         print("[formula] status:", r.status_code)
         if not r.ok:
@@ -172,12 +234,19 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
         'FSYM_TICKER_EXCHANGE(0,"ID")': 'ticker',
         'FG_COMPANY_NAME': 'name',
         'P_PRICE(0)': 'price',
+        # legacy alias if ever nonzero
         'P_VOL_AVG(-1/0/0)': 'avg_30d_volume_millions',
+        'P_VOLUME_AVG(0,-1/0/0,0)': 'avg_30d_volume_shares',
+        'P_VOLUME_AVG(0,-1/0/0)': 'avg_30d_volume_millions_raw',
+        'P_VOLUME(0)': 'volume_last',
         # HTTP snake-case fallbacks
         "fsym_ticker_exchange_0_id_": "ticker",
         "fg_company_name": "name",
         "p_price_0_": "price",
         "p_vol_avg_-1_0_0_": "avg_30d_volume_millions",
+        "p_volume_avg_0_-1_0_0_0_": "avg_30d_volume_shares",
+        "p_volume_avg_0_-1_0_0_": "avg_30d_volume_millions_raw",
+        "p_volume_0_": "volume_last",
     }
 
     shares_symbol = f["_shares_symbol"].upper()
@@ -246,11 +315,27 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
 
     df['region'] = (region or 'CPH').upper()
 
-    # Harmonize volume column: prefer millions and derive raw shares later
-    if 'avg_30d_volume_millions' in df.columns:
-        df['avg_vol_30d_millions'] = df['avg_30d_volume_millions']
-    elif 'avg_30d_volume' in df.columns:
-        df['avg_vol_30d_millions'] = df['avg_30d_volume']
+    # Harmonize volume columns (produce a single 'avg_vol_30d_millions')
+    # Priority:
+    # 1) explicit millions (P_VOLUME_AVG millions or legacy P_VOL_AVG)
+    # 2) explicit shares (convert to millions)
+    # 3) last day volume as fallback (convert to millions)
+    if 'avg_30d_volume_millions_raw' in df.columns and df['avg_30d_volume_millions_raw'].notna().any():
+        df['avg_vol_30d_millions'] = pd.to_numeric(
+            df['avg_30d_volume_millions_raw'], errors='coerce')
+    elif 'avg_30d_volume_millions' in df.columns and df['avg_30d_volume_millions'].notna().any():
+        df['avg_vol_30d_millions'] = pd.to_numeric(
+            df['avg_30d_volume_millions'], errors='coerce')
+    elif 'avg_30d_volume_shares' in df.columns and df['avg_30d_volume_shares'].notna().any():
+        df['avg_vol_30d_millions'] = pd.to_numeric(
+            df['avg_30d_volume_shares'], errors='coerce') / 1_000_000.0
+    elif 'avg_30d_volume' in df.columns and df['avg_30d_volume'].notna().any():
+        # historical compatibility if server returns 'avg_30d_volume' already in millions
+        df['avg_vol_30d_millions'] = pd.to_numeric(
+            df['avg_30d_volume'], errors='coerce')
+    elif 'volume_last' in df.columns:
+        df['avg_vol_30d_millions'] = pd.to_numeric(
+            df['volume_last'], errors='coerce') / 1_000_000.0
 
     cols = ['ticker', 'issuer', 'name', 'price', 'shares',
             'shares_capped', 'omx_weight', 'omx_weight_capped', 'avg_vol_30d_millions', 'mcap', 'region']
@@ -295,8 +380,13 @@ def fetch_index_shares(region: str = 'CPH') -> pd.DataFrame:
     }
     url = FACTSET_FORMULA_URL + '?' + _up.urlencode(params, safe=",()")
     # Use the conditionally-imported requests module to work in both SDK and non-SDK modes
-    r = _req_mod.get(url, auth=(FACTSET_USERNAME, FACTSET_API_KEY),
-                     headers=headers, verify=verify_ssl)
+    # Use same backoff helper via requests (module available as _req_mod), but fall back if not
+    try:
+        r = _request_with_backoff('GET', url, auth=(FACTSET_USERNAME, FACTSET_API_KEY),
+                                  headers=headers, verify=verify_ssl)
+    except Exception:
+        r = _req_mod.get(url, auth=(FACTSET_USERNAME, FACTSET_API_KEY),
+                         headers=headers, verify=verify_ssl)
     print('[shares-only] status:', r.status_code)
     if not r.ok:
         print('[shares-only] body:', r.text[:600])

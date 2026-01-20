@@ -105,7 +105,7 @@ function computeProposal(indexId, data, options = {}) {
     const proposal = {
         meta: {
             generated_at: new Date().toISOString(),
-            method: `mcap_norm_capC_${cap.toFixed(4)}${issuerCap ? `_capI_${issuerCap.toFixed(4)}` : ''}`,
+            method: `mcap_norm_capC_${cap.toFixed(2)}${issuerCap ? `_capI_${issuerCap.toFixed(2)}` : ''}`,
             indexId,
             quarterly
         },
