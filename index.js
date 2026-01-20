@@ -941,13 +941,17 @@ app.get('/index', async (req, res) => {
               const map = new Map();
               for (const r of rows){
                 const key = companyKeyFrom(r);
-                const entry = map.get(key) || { __key:key, __rows:[], name:'', issuer:'', mcap_uncapped:0, mcap:0, old_weight:0, new_weight:0, delta_pct:0, delta_vol:null, days_to_cover:null, flagsSet:new Set(), __classes:new Set() };
+                const entry = map.get(key) || { __key:key, __rows:[], name:'', issuer:'', mcap_uncapped:null, mcap:null, old_weight:0, new_weight:0, delta_pct:0, delta_vol:null, days_to_cover:null, flagsSet:new Set(), __classes:new Set() };
                 entry.__rows.push(r);
                 const nm = r.name || r.issuer || r.ticker || '';
                 if (!entry.name) entry.name = stripClassDesignators(nm);
                 if (!entry.issuer) entry.issuer = stripClassDesignators(r.issuer || nm);
-                entry.mcap_uncapped += (Number(r.mcap_uncapped || r.mcap || 0) || 0);
-                entry.mcap += (Number(r.mcap || 0) || 0);
+                // add mcap values only when present to avoid misleading 0.00
+                if (r.mcap_uncapped != null && !Number.isNaN(Number(r.mcap_uncapped))) {
+                  entry.mcap_uncapped = (entry.mcap_uncapped == null ? 0 : entry.mcap_uncapped) + Number(r.mcap_uncapped);
+                } else if (r.mcap != null && !Number.isNaN(Number(r.mcap))) {
+                  entry.mcap = (entry.mcap == null ? 0 : entry.mcap) + Number(r.mcap);
+                }
                 entry.old_weight += (typeof r.old_weight==='number'? Number(r.old_weight): (typeof r.curr_weight_capped==='number'? Number(r.curr_weight_capped): (typeof r.curr_weight_uncapped==='number'? Number(r.curr_weight_uncapped):0)));
                 entry.new_weight += (typeof r.new_weight==='number'? Number(r.new_weight): (typeof r.weight==='number'? Number(r.weight):0));
                 entry.delta_pct += (typeof r.delta_pct==='number'? Number(r.delta_pct):0);
@@ -1055,9 +1059,13 @@ app.get('/index', async (req, res) => {
                 const ccy = selectedMeta.ccy || currencyByRegion[region] || '';
                 document.getElementById('quarterlyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Rows: ' + rows.length + ' · AUM (' + (ccy || 'CCY') + '): ' + (aum ? aum.toLocaleString('en-DK') : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/quarterly">JSON</a>';
                 quarterlyRowsCache = rows.slice();
-                // Build a quick lookup from daily cache to map ticker->display name and ADV (millions)
+                // Build lookups from daily cache
+                // - ticker -> display name
+                // - ticker -> ADV (millions)
+                // - companyKey -> Market Cap (bn) aggregated
                 const nameByTicker = new Map();
                 const advByTickerMillions = new Map();
+                const mcapBnByCompanyKey = new Map();
                 try {
                   (dailyRowsCache || []).forEach(dr => {
                     const tk = (dr.ticker || '').toString().toUpperCase();
@@ -1066,11 +1074,18 @@ app.get('/index', async (req, res) => {
                     nameByTicker.set(tk, stripClassDesignators(nm));
                     const adv = (dr.avg_daily_volume != null ? Number(dr.avg_daily_volume) : null);
                     advByTickerMillions.set(tk, (adv != null ? (adv/1e6) : null));
+                    const ck = companyKeyFrom(dr);
+                    const mcapRaw = (dr.market_cap != null ? Number(dr.market_cap) : (dr.mcap != null ? Number(dr.mcap) : null));
+                    if (mcapRaw != null && !Number.isNaN(mcapRaw)) {
+                      mcapBnByCompanyKey.set(ck, (mcapRaw/1e9));
+                    }
                   });
                 } catch (e) {}
                 function getQuarterlyVal(row){
                   const issuer = (row.issuer || row.ticker || '').toLowerCase();
-                  const mcap = (row.mcap_uncapped!=null? Number(row.mcap_uncapped): (row.mcap!=null? Number(row.mcap): (row.mcap_bn!=null? Number(row.mcap_bn)*1e9: null)));
+                  const mcap = (row.mcap_uncapped!=null && Number(row.mcap_uncapped)>0 ? Number(row.mcap_uncapped)
+                                : (row.mcap!=null && Number(row.mcap)>0 ? Number(row.mcap)
+                                : (row.mcap_bn!=null && Number(row.mcap_bn)>0 ? Number(row.mcap_bn)*1e9 : null)));
                   const currW = (row.old_weight != null) ? Number(row.old_weight) : null;
                   const newW = (row.new_weight != null) ? Number(row.new_weight) : null;
                   const deltaFrac = (currW != null && newW != null) ? (newW - currW) : null;
@@ -1092,10 +1107,11 @@ app.get('/index', async (req, res) => {
                   const tkUp = (r.ticker || '').toString().toUpperCase();
                   const mappedName = nameByTicker.get(tkUp);
                   const issuer = mappedName || (r.name || r.issuer || r.ticker || '');
+                  const cKey = companyKeyFrom(r);
                   const mcapBn = (
-                    r.mcap_bn != null ? Number(r.mcap_bn) : (
-                    r.mcap != null ? (Number(r.mcap) / 1e9) : (
-                      r.mcap_uncapped != null ? (Number(r.mcap_uncapped) / 1e9) : null))
+                    r.mcap_bn != null && Number(r.mcap_bn) > 0 ? Number(r.mcap_bn) : (
+                    r.mcap != null && Number(r.mcap) > 0 ? (Number(r.mcap) / 1e9) : (
+                      r.mcap_uncapped != null && Number(r.mcap_uncapped) > 0 ? (Number(r.mcap_uncapped) / 1e9) : (mcapBnByCompanyKey.get(cKey) ?? null)))
                   );
                   const currW = (typeof r.old_weight==='number') ? Number(r.old_weight) : null; // decimal fraction
                   const newW = (typeof r.new_weight==='number') ? Number(r.new_weight) : null; // decimal fraction
@@ -1113,7 +1129,7 @@ app.get('/index', async (req, res) => {
                   const deltaClass = (deltaPct!=null && deltaPct>0) ? 'text-green-700' : (deltaPct!=null && deltaPct<0 ? 'text-red-700' : '');
                   return '<tr class="border-b">'
                     + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + issuer + '</td>'
-                    + '<td class="px-3 py-2 text-sm text-right">' + (mcapBn != null ? mcapBn.toFixed(2) : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm text-right">' + (mcapBn != null && mcapBn>0 ? mcapBn.toFixed(2) : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right" title="' + (currWPct!=null? currWPct.toFixed(2)+'%':'') + '">' + (currWPct != null ? currWPct.toFixed(2) + '%' : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right" title="' + (newWPct!=null? newWPct.toFixed(2)+'%':'') + '">' + (newWPct != null ? newWPct.toFixed(2) + '%' : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right ' + deltaClass + '">' + (deltaPct != null ? deltaPct.toFixed(2) + '%' : '') + '</td>'
@@ -1204,10 +1220,11 @@ app.get('/index', async (req, res) => {
                   const rowClass = flags.includes('40% breach') ? 'bg-red-50' : (flags.includes('10% breach') ? 'bg-yellow-50' : '');
                   const mcapRaw = (r.market_cap != null ? Number(r.market_cap) : (r.mcap != null ? Number(r.mcap) : null));
                   const mcapBn = (mcapRaw != null) ? (mcapRaw / 1e9) : null;
-                  // Reconstruct current capped weight from target and delta: curr_cap = target_cap - delta
-                  const currCap = (r.capped_weight != null && typeof r.delta_pct === 'number') ? (Number(r.capped_weight) - Number(r.delta_pct)) : null;
-                  const wPct = (currCap != null) ? (currCap * 100) : null; // display current capped in first column
-                  const cwPct = (r.capped_weight != null) ? (Number(r.capped_weight) * 100) : null; // display target capped
+                  // Current capped weight from row; Target = current + delta (only when flagged)
+                  const currCap = (r.capped_weight != null) ? Number(r.capped_weight) : (r.weight != null ? Number(r.weight) : null);
+                  const targetCap = (currCap != null && typeof r.delta_pct === 'number') ? (currCap + Number(r.delta_pct)) : null;
+                  const wPct = (currCap != null) ? (currCap * 100) : null; // display current capped
+                  const cwPct = (targetCap != null) ? (targetCap * 100) : null; // display target only when flagged
                   const deltaFrac = (typeof r.delta_pct === 'number') ? Number(r.delta_pct) : null;
                   const deltaPct = (deltaFrac != null) ? (deltaFrac * 100) : null;
                   const deltaAmt = (aum && deltaFrac != null) ? (aum * deltaFrac) : null;
@@ -1223,8 +1240,9 @@ app.get('/index', async (req, res) => {
                     '<tr id="' + id + '" class="border-b ' + rowClass + '">'
                     + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + displayName + cutPill + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (mcapBn != null ? mcapBn.toFixed(2) : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm text-right">' + (!r.__multi && r.price != null ? Number(r.price).toFixed(2) : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right" title="' + (wPct!=null? wPct.toFixed(2)+'%':'') + '">' + (wPct != null ? wPct.toFixed(2) + '%' : '') + '</td>'
-                    + '<td class="px-3 py-2 text-sm text-right" title="' + (cwPct!=null? cwPct.toFixed(2)+'%':'') + '">' + (cwPct != null ? cwPct.toFixed(2) + '%' : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm text-right" title="' + (cwPct!=null? cwPct.toFixed(2)+'%':'') + '">' + (showCalcs && cwPct != null ? cwPct.toFixed(2) + '%' : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right ' + deltaClass + '">' + (showCalcs && deltaPct != null ? deltaPct.toFixed(2) + '%' : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (showCalcs && deltaAmt != null ? Math.round(deltaAmt).toLocaleString('en-DK') : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (showCalcs && dtcRaw != null ? dtcRaw.toFixed(2) : '') + '</td>'
@@ -1259,11 +1277,12 @@ app.get('/index', async (req, res) => {
                 } catch (e) {}
                 // Table with controls
                 const controls = '<div class="flex items-center gap-2 mb-2"><button id="dailyTop25" class="px-2 py-1 border rounded text-xs">Top 25</button><button id="dailyTop100" class="px-2 py-1 border rounded text-xs">Show 100</button><button id="dailyCsv" class="px-2 py-1 border rounded text-xs">Export CSV</button></div>';
-                document.getElementById('dailyTable').innerHTML = controls + '<div class="overflow-auto"><table class="w-full text-left"><thead class="bg-gray-100"><tr><th class="px-3 py-2 sticky left-0 bg-gray-100 cursor-pointer" data-dsort="issuer">Company Name</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="mcap">Market Cap, bn</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="weight">Current (capped)</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="capped_weight">Target (capped)</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="delta_pct">Delta, %</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="delta_amt">Delta, ' + (ccy || 'Amt') + '</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="dtc">Days to Cover</th><th class="px-3 py-2">Flags</th></tr></thead><tbody>' + (trs || '<tr><td class="px-3 py-4 text-sm text-slate-500" colspan="8">No data.</td></tr>') + '</tbody></table></div>';
+                document.getElementById('dailyTable').innerHTML = controls + '<div class="overflow-auto"><table class="w-full text-left"><thead class="bg-gray-100"><tr><th class="px-3 py-2 sticky left-0 bg-gray-100 cursor-pointer" data-dsort="issuer">Company Name</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="mcap">Market Cap, bn</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="price">Price</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="weight">Current (capped)</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="capped_weight">Target (capped)</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="delta_pct">Delta, %</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="delta_amt">Delta, ' + (ccy || 'Amt') + '</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="dtc">Days to Cover</th><th class="px-3 py-2">Flags</th></tr></thead><tbody>' + (trs || '<tr><td class="px-3 py-4 text-sm text-slate-500" colspan="9">No data.</td></tr>') + '</tbody></table></div>';
                 // Header click sorting (Daily)
                 function getDailyVal(row){
                   const issuer = (row.name || row.issuer || row.ticker || '').toLowerCase();
                   const mcap = (row.market_cap != null ? Number(row.market_cap) : (row.mcap != null ? Number(row.mcap) : null));
+                  const price = (!row.__multi && row.price != null ? Number(row.price) : null);
                   const weight = (row.weight != null ? Number(row.weight) : null);
                   const cweight = (row.capped_weight != null ? Number(row.capped_weight) : null);
                   const deltaFrac = (typeof row.delta_pct === 'number') ? Number(row.delta_pct) : null;
@@ -1274,6 +1293,7 @@ app.get('/index', async (req, res) => {
                   })();
                   if (dailySort.key==='issuer') return issuer;
                   if (dailySort.key==='mcap') return mcap;
+                  if (dailySort.key==='price') return price;
                   if (dailySort.key==='weight') return weight;
                   if (dailySort.key==='capped_weight') return cweight;
                   if (dailySort.key==='delta_pct') return deltaFrac;
@@ -1298,9 +1318,10 @@ app.get('/index', async (req, res) => {
                       const rowClass = flags.includes('40% breach') ? 'bg-red-50' : (flags.includes('10% breach') ? 'bg-yellow-50' : '');
                       const mcapRaw = (r.market_cap != null ? Number(r.market_cap) : (r.mcap != null ? Number(r.mcap) : null));
                       const mcapBn = (mcapRaw != null) ? (mcapRaw / 1e9) : null;
-                      const currCap = (r.capped_weight != null && typeof r.delta_pct === 'number') ? (Number(r.capped_weight) - Number(r.delta_pct)) : null;
+                      const currCap = (r.capped_weight != null) ? Number(r.capped_weight) : (r.weight != null ? Number(r.weight) : null);
+                      const targetCap = (currCap != null && typeof r.delta_pct === 'number') ? (currCap + Number(r.delta_pct)) : null;
                       const wPct = (currCap != null) ? (currCap * 100) : null; // current capped
-                      const cwPct = (r.capped_weight != null) ? (Number(r.capped_weight) * 100) : null; // target capped
+                      const cwPct = (targetCap != null) ? (targetCap * 100) : null; // target only when flagged
                       const deltaFrac = (typeof r.delta_pct === 'number') ? Number(r.delta_pct) : null;
                       const deltaPct = (deltaFrac != null) ? (deltaFrac * 100) : null;
                       const deltaAmt2 = (aum && deltaFrac != null) ? (aum * deltaFrac) : null;
@@ -1316,8 +1337,9 @@ app.get('/index', async (req, res) => {
                         '<tr id="' + id + '" class="border-b ' + rowClass + '">'
                         + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + (r.name || r.issuer || '') + cutPill + '</td>'
                         + '<td class="px-3 py-2 text-sm text-right">' + (mcapBn != null ? mcapBn.toFixed(2) : '') + '</td>'
+                        + '<td class="px-3 py-2 text-sm text-right">' + (!r.__multi && r.price != null ? Number(r.price).toFixed(2) : '') + '</td>'
                         + '<td class="px-3 py-2 text-sm text-right" title="' + (wPct!=null? wPct.toFixed(2)+'%':'') + '">' + (wPct != null ? wPct.toFixed(2) + '%' : '') + '</td>'
-                        + '<td class="px-3 py-2 text-sm text-right" title="' + (cwPct!=null? cwPct.toFixed(2)+'%':'') + '">' + (cwPct != null ? cwPct.toFixed(2) + '%' : '') + '</td>'
+                        + '<td class="px-3 py-2 text-sm text-right" title="' + (cwPct!=null? cwPct.toFixed(2)+'%':'') + '">' + (showCalcs && cwPct != null ? cwPct.toFixed(2) + '%' : '') + '</td>'
                         + '<td class="px-3 py-2 text-sm text-right ' + deltaClass + '">' + (showCalcs && deltaPct != null ? deltaPct.toFixed(2) + '%' : '') + '</td>'
                         + '<td class="px-3 py-2 text-sm text-right">' + (showCalcs && deltaAmt2 != null ? Math.round(deltaAmt2).toLocaleString('en-DK') : '') + '</td>'
                         + '<td class="px-3 py-2 text-sm text-right">' + (showCalcs && dtc2 != null ? dtc2.toFixed(2) : '') + '</td>'
