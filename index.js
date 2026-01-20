@@ -2039,6 +2039,34 @@ app.listen(PORT, () => {
             resolve();
           });
         });
+        // If quarterly table is empty, populate it once on startup
+        try {
+          const qt = quarterlyTableForIndex(r.indexId);
+          if (qt) {
+            const { data: qdates, error: qerr } = await supabase
+              .from(qt)
+              .select('as_of')
+              .order('as_of', { ascending: false })
+              .limit(1);
+            const hasQuarterly = !qerr && Array.isArray(qdates) && qdates.length > 0 && Boolean(qdates[0]?.as_of);
+            if (!hasQuarterly) {
+              await new Promise((resolve) => {
+                execFile(pythonCmd, [scriptPath, '--region', r.region, '--index-id', r.indexId, '--quarterly'], { env: process.env }, (error, stdout, stderr) => {
+                  if (error) {
+                    console.error('[startup] Quarterly run error', r, error);
+                    writeSchedulerLog(`startup Quarterly error region=${r.region} index=${r.indexId}: ${error && error.message ? error.message : String(error)}`);
+                  } else {
+                    console.log('[startup] Quarterly run ok', r, stdout);
+                    writeSchedulerLog(`startup Quarterly ok region=${r.region} index=${r.indexId}`);
+                  }
+                  resolve();
+                });
+              });
+            }
+          }
+        } catch (qe) {
+          console.warn('[startup] quarterly presence check failed', r, qe && qe.message ? qe.message : qe);
+        }
       }
     } catch (e) {
       console.error('[startup] FactSet batch failed', e && e.message ? e.message : e);
