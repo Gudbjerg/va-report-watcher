@@ -300,14 +300,10 @@ app.get('/kaxcap', async (req, res) => {
       { key: 'ticker', label: 'Ticker' },
       { key: 'name', label: 'Name' },
       { key: 'mcap_uncapped', label: 'Mcap (uncapped)', format: (v) => Number(v || 0).toLocaleString() },
-      { key: 'curr_weight_uncapped', label: 'Current Uncapped', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'curr_weight_capped', label: 'Current Capped', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'weight', label: 'Proforma Weight', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'delta_pct', label: 'Delta (vs capped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'days_to_cover', label: 'Days to Cover', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
-      { key: 'delta_vol', label: 'Delta Vol (millions)', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+      { key: 'weight', label: 'Weight (uncapped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
+      { key: 'capped_weight', label: 'Weight (capped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
     ];
-    const html = ['<!doctype html><html><head>', renderHead('KAXCAP — Daily Status (Top 25 Uncapped Order, Delta Vol in millions)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('KAXCAP — Daily Status (Top 25 Uncapped Order, Delta Vol in millions)', ranked, cols), renderFooter(), '</body></html>'].join('');
+    const html = ['<!doctype html><html><head>', renderHead('KAXCAP — Daily Status (Top 25 by Uncapped Mcap)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('KAXCAP — Daily Status (Top 25 by Uncapped Mcap)', ranked, cols), renderFooter(), '</body></html>'].join('');
     res.send(html);
   } catch (e) {
     res.status(500).send(String(e && e.message ? e.message : e));
@@ -322,14 +318,10 @@ app.get('/hel', async (req, res) => {
       { key: 'ticker', label: 'Ticker' },
       { key: 'name', label: 'Name' },
       { key: 'mcap_uncapped', label: 'Mcap (uncapped)', format: (v) => Number(v || 0).toLocaleString() },
-      { key: 'curr_weight_uncapped', label: 'Current Uncapped', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'curr_weight_capped', label: 'Current Capped', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'weight', label: 'Proforma Weight', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'delta_pct', label: 'Delta (vs capped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'days_to_cover', label: 'Days to Cover', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
-      { key: 'delta_vol', label: 'Delta Vol (millions)', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+      { key: 'weight', label: 'Weight (uncapped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
+      { key: 'capped_weight', label: 'Weight (capped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
     ];
-    const html = ['<!doctype html><html><head>', renderHead('HEL — Daily Status (Top 25 Uncapped Order, Delta Vol in millions)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('HEL — Daily Status (Top 25 Uncapped Order, Delta Vol in millions)', ranked, cols), renderFooter(), '</body></html>'].join('');
+    const html = ['<!doctype html><html><head>', renderHead('HEL — Daily Status (Top 25 by Uncapped Mcap)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('HEL — Daily Status (Top 25 by Uncapped Mcap)', ranked, cols), renderFooter(), '</body></html>'].join('');
     res.send(html);
   } catch (e) {
     res.status(500).send(String(e && e.message ? e.message : e));
@@ -344,74 +336,17 @@ app.get('/sto', async (req, res) => {
       { key: 'ticker', label: 'Ticker' },
       { key: 'name', label: 'Name' },
       { key: 'mcap_uncapped', label: 'Mcap (uncapped)', format: (v) => Number(v || 0).toLocaleString() },
-      { key: 'curr_weight_uncapped', label: 'Current Uncapped', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'curr_weight_capped', label: 'Current Capped', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'weight', label: 'Proforma Weight', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'delta_pct', label: 'Delta (vs capped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
-      { key: 'days_to_cover', label: 'Days to Cover', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
-      { key: 'delta_vol', label: 'Delta Vol (millions)', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+      { key: 'weight', label: 'Weight (uncapped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
+      { key: 'capped_weight', label: 'Weight (capped)', format: (v) => (Number(v || 0) * 100).toFixed(4) + '%' },
     ];
-    const html = ['<!doctype html><html><head>', renderHead('STO — Daily Status (Top 25 Uncapped Order, Delta Vol in millions)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('STO — Daily Status (Top 25 Uncapped Order, Delta Vol in millions)', ranked, cols), renderFooter(), '</body></html>'].join('');
+    const html = ['<!doctype html><html><head>', renderHead('STO — Daily Status (Top 25 by Uncapped Mcap)'), '</head><body class="bg-gray-50">', renderHeader(), renderIndexTable('STO — Daily Status (Top 25 by Uncapped Mcap)', ranked, cols), renderFooter(), '</body></html>'].join('');
     res.send(html);
   } catch (e) {
     res.status(500).send(String(e && e.message ? e.message : e));
   }
 });
 
-app.get('/product/rebalancer', async (req, res) => {
-  try {
-    // Read from per-index quarterly proforma tables and show Top 15
-    async function fetchQuarterly(indexId) {
-      const qt = quarterlyTableForIndex(indexId);
-      if (!qt) return [];
-      const { data: dates, error: err1 } = await supabase
-        .from(qt)
-        .select('as_of')
-        .order('as_of', { ascending: false })
-        .limit(1);
-      if (err1) return [];
-      const asOf = dates && dates[0] ? dates[0].as_of : null;
-      if (!asOf) return [];
-      const { data, error: err2 } = await supabase
-        .from(qt)
-        .select('*')
-        .eq('as_of', asOf)
-        .order('new_weight', { ascending: false })
-        .limit(1000);
-      if (err2) return [];
-      return Array.isArray(data) ? data : [];
-    }
-
-    const rowsKax = await fetchQuarterly('KAXCAP');
-    const rowsHel = await fetchQuarterly(process.env.HEL_INDEX_ID || 'HELXCAP');
-    const rowsSto = await fetchQuarterly(process.env.STO_INDEX_ID || 'OMXSALLS');
-
-    const cols = [
-      { key: 'ticker', label: 'Ticker' },
-      { key: 'issuer', label: 'Name' },
-      { key: 'price', label: 'Price', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 4 }) },
-      { key: 'shares', label: 'Shares', format: (v) => Number(v || 0).toLocaleString() },
-      { key: 'mcap_uncapped', label: 'Uncapped Mcap', format: (v) => Number(v || 0).toLocaleString() },
-      { key: 'new_weight', label: 'Proforma Weight', format: (v) => (Number(v || 0)).toFixed(4) + '%' },
-      { key: 'old_weight', label: 'Current Capped', format: (v) => (Number(v || 0)).toFixed(4) + '%' },
-      { key: 'delta_pct', label: 'Delta %', format: (v) => (Number(v || 0)).toFixed(4) + '%' },
-      { key: 'delta_ccy', label: 'Delta CCY', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
-      { key: 'delta_vol', label: 'Delta Vol (millions)', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
-      { key: 'days_to_cover', label: 'Days to Cover', format: (v) => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
-    ];
-    const kaxRanked = rowsKax.slice(0, 15);
-    const helRanked = rowsHel.slice(0, 15);
-    const stoRanked = rowsSto.slice(0, 15);
-    const html = ['<!doctype html><html><head>', renderHead('Index Rebalancer'), '</head><body class="bg-gray-50">', renderHeader(),
-      renderIndexTable('KAXCAP — Quarterly Proforma (Delta Vol in millions)', kaxRanked, cols),
-      renderIndexTable('HELXCAP — Quarterly Proforma (Delta Vol in millions)', helRanked, cols),
-      renderIndexTable('OMXSALLS — Quarterly Proforma (Delta Vol in millions)', stoRanked, cols),
-      renderFooter(), '</body></html>'].join('');
-    res.send(html);
-  } catch (e) {
-    res.status(500).send(String(e && e.message ? e.message : e));
-  }
-});
+// (removed duplicate early '/product/rebalancer' route; canonical route kept later)
 // Helper: render the dashboard HTML for a given project name
 async function renderDashboard(project = 'Universal') {
   // Ensure in-memory state is populated from DB if empty
@@ -453,7 +388,7 @@ async function renderDashboard(project = 'Universal') {
   // Render a single coherent HTML template. Client-side JS (below) will fetch and render memes dynamically
   return `<!doctype html>
   <html lang="en">
-    <head>
+    <head>${renderHead('MarketBuddy — ' + project)}
       <style>/* small helper to make posted meme images scale */
         .meme-img{width:100%;height:auto;object-fit:cover;border-radius:8px}
         .meme-img{max-height:400px;}
@@ -509,7 +444,6 @@ async function renderDashboard(project = 'Universal') {
             </div>
           </div>
         </div>
-      </section>
 
   <main class="max-w-4xl mx-auto p-6">
         <div class="bg-white rounded-xl shadow p-6">
@@ -863,34 +797,23 @@ app.get('/index', async (req, res) => {
                 const totalW = rows.reduce((s, r) => s + (Number(r.weight) || 0), 0);
                 document.getElementById('dailyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Rows: ' + rows.length + ' · Sum(weight): ' + (totalW ? totalW.toFixed(6) : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/constituents">JSON</a>';
                 const top = rows.slice(0, 25);
-                const trs = top.map(r => (
-                  '<tr class="border-b">'
-                  + '<td class="px-3 py-2 font-mono text-sm">' + (r.ticker || '') + '</td>'
-                  + '<td class="px-3 py-2 text-sm">' + (r.issuer || '') + '</td>'
-                  + '<td class="px-3 py-2 text-sm">' + (r.region || '') + '</td>'
-                  + '<td class="px-3 py-2 text-sm">' + ((r.market_cap != null ? String(r.market_cap) : (r.mcap != null ? String(r.mcap) : ''))) + '</td>'
-                  + '<td class="px-3 py-2 text-sm">' + (r.weight != null ? Number(r.weight).toFixed(6) : '') + '</td>'
-                  + '<td class="px-3 py-2 text-sm">' + (r.capped ? 'capped' : '') + '</td>'
-                  + '</tr>'
-                )).join('');
+                const trs = top.map(r => {
+                  const flags = (typeof r.capped_weight === 'number' && typeof r.weight === 'number' && Math.abs(r.capped_weight - r.weight) > 1e-9) ? 'capped' : '';
+                  return (
+                    '<tr class="border-b">'
+                    + '<td class="px-3 py-2 font-mono text-sm">' + (r.ticker || '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm">' + (r.issuer || '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm">' + (r.region || '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm">' + ((r.market_cap != null ? String(r.market_cap) : (r.mcap != null ? String(r.mcap) : ''))) + '</td>'
+                    + '<td class="px-3 py-2 text-sm">' + (r.weight != null ? Number(r.weight).toFixed(6) : '') + '</td>'
+                    + '<td class="px-3 py-2 text-sm">' + flags + '</td>'
+                    + '</tr>'
+                  );
+                }).join('');
                 document.getElementById('dailyTable').innerHTML = '<div class="overflow-auto"><table class="w-full text-left"><thead class="bg-gray-100"><tr><th class="px-3 py-2">Ticker</th><th class="px-3 py-2">Issuer</th><th class="px-3 py-2">Region</th><th class="px-3 py-2">Market Cap</th><th class="px-3 py-2">Weight</th><th class="px-3 py-2">Flags</th></tr></thead><tbody>' + (trs || '<tr><td class="px-3 py-4 text-sm text-slate-500" colspan="6">No data.</td></tr>') + '</tbody></table></div>';
               } catch (e) {
                 document.getElementById('dailyMeta').textContent = 'Daily load failed';
                 document.getElementById('dailyTable').innerHTML = '';
-              }
-            }
-
-            async function loadDailyHistory() {
-              try {
-                const r = await fetch('/api/index/' + selected + '/constituents');
-                const json = await r.json();
-                const asOf = json.asOf || null;
-                // List last 5 distinct as_of dates for the selected index
-                const { rows } = json;
-                const dates = [...new Set((rows || []).map(x => x.as_of))].slice(0,5);
-                document.getElementById('dailyHistory').innerHTML = dates.length ? ('Recent as_of: ' + dates.map(d => '<a class="text-blue-600" href="/api/index/' + selected + '/constituents">' + d + '</a>').join(' · ')) : '';
-              } catch (e) {
-                document.getElementById('dailyHistory').textContent = '';
               }
             }
 

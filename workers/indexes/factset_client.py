@@ -294,7 +294,8 @@ def fetch_index_shares(region: str = 'CPH') -> pd.DataFrame:
         'universeExclusion': 'NONEQUITY',
     }
     url = FACTSET_FORMULA_URL + '?' + _up.urlencode(params, safe=",()")
-    r = requests.get(url, auth=(FACTSET_USERNAME, FACTSET_API_KEY),
+    # Use the conditionally-imported requests module to work in both SDK and non-SDK modes
+    r = _req_mod.get(url, auth=(FACTSET_USERNAME, FACTSET_API_KEY),
                      headers=headers, verify=verify_ssl)
     print('[shares-only] status:', r.status_code)
     if not r.ok:
