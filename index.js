@@ -1150,14 +1150,14 @@ app.get('/index', async (req, res) => {
               <div id="rateDetailsPanel" class="hidden mb-3 p-3 rounded border border-slate-200 bg-slate-50 text-xs text-slate-700"></div>
 
               <section class="mb-6">
-                <h2 class="text-lg md:text-xl font-bold mb-1">Quarterly Proforma</h2>
+                <h2 class="text-xl md:text-2xl font-bold mb-1">Quarterly Proforma</h2>
                 <p class="text-xs text-slate-500 mb-2">Uncapped ranking → assign exception caps and 4.5% cap; deltas vs current capped, with AUM-derived flow and DTC.</p>
                 <div id="quarterlyMeta" class="text-xs text-slate-500 mb-2"></div>
                 <div id="quarterlyTable"></div>
               </section>
 
               <section>
-                <h2 class="text-lg md:text-xl font-bold mb-1">Daily Status <span id="dailyBadge" class="ml-2 inline-block px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700" aria-label="Warnings count">0</span></h2>
+                <h2 class="text-xl md:text-2xl font-bold mb-1">Daily Status <span id="dailyBadge" class="ml-2 inline-block px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700" aria-label="Warnings count">0</span></h2>
                 <p class="text-xs text-slate-500 mb-2">Current capped ranking and daily rule tracking. Flags 10% exception breaches and 40% aggregate (>5%) with cut candidate at 4.5%.</p>
                 <div id="dailyMeta" class="text-xs text-slate-500 mb-2"></div>
                 <div id="dailyWarnings" class="mb-2"></div>
@@ -1194,6 +1194,20 @@ app.get('/index', async (req, res) => {
             let dailySort = { key: 'capped_weight', dir: 'desc' };
             let quarterlySort = { key: 'mcap', dir: 'desc' };
             let nextRefreshSec = 1200;
+            // Make 'Headers' toggle work immediately; content will fill after loadUsage()
+            (function(){
+              const btn = document.getElementById('rateDetailsBtn');
+              const panel = document.getElementById('rateDetailsPanel');
+              if (btn && panel) {
+                btn.addEventListener('click', () => {
+                  const hidden = panel.classList.contains('hidden');
+                  panel.classList.toggle('hidden', !hidden);
+                  if (hidden && !panel.innerHTML.trim()) {
+                    panel.innerHTML = '<div class="text-slate-600 mb-1">Rate headers snapshot</div><pre class="whitespace-pre-wrap">(no headers yet)</pre>';
+                  }
+                });
+              }
+            })();
             function regionFor(indexId){
               const id = String(indexId||'').toUpperCase();
               if(id==='KAXCAP' || id==='OMXCAPPGI') return 'CPH';
@@ -1431,15 +1445,6 @@ app.get('/index', async (req, res) => {
                     const headerText = JSON.stringify(snap, null, 2);
                     panel.innerHTML = '<div class="mb-2 text-slate-600">' + (meta.join(' · ') || 'Rate headers snapshot') + '</div>' + '<pre class="whitespace-pre-wrap">' + headerText.replace(/[<&]/g, c=>({"<":"&lt;","&":"&amp;"}[c])) + '</pre>';
                   }
-                  const btn = document.getElementById('rateDetailsBtn');
-                  if (btn) {
-                    btn.onclick = () => {
-                      const p = document.getElementById('rateDetailsPanel');
-                      if (!p) return;
-                      const hidden = p.classList.contains('hidden');
-                      p.classList.toggle('hidden', !hidden);
-                    };
-                  }
                 }
               } catch(e) {}
               try {
@@ -1557,7 +1562,7 @@ app.get('/index', async (req, res) => {
                   ));
                   const deltaClass = (deltaPct!=null && deltaPct>0) ? 'text-green-700' : (deltaPct!=null && deltaPct<0 ? 'text-red-700' : '');
                   const rowId = 'q-' + sanitizeId(issuer);
-                  const toggle = (r.__multi ? '<button class="mr-2 text-xs px-1 py-0.5 border rounded" data-toggle="'+rowId+'">▶</button>' : '');
+                  const toggle = (r.__multi ? '<button class="toggle-btn mr-2 text-xs px-1.5 py-0.5 border rounded bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-300" aria-expanded="false" data-toggle="'+rowId+'">▶</button>' : '');
                   // Correct the <tr> opening tag (was missing '>')
                   let html = '<tr class="border-b">'
                     + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + toggle + issuer + '</td>'
@@ -1593,8 +1598,8 @@ app.get('/index', async (req, res) => {
                       const cNewPct = (cNew!=null ? (cNew*100).toFixed(2)+'%' : '');
                       const cDeltaPct = (cDelta!=null ? (cDelta*100).toFixed(2)+'%' : '');
                       // Correct the <tr> opening tag for child rows (was missing '>')
-                      return '<tr class="border-b hidden child-of-'+rowId+'">'
-                        + '<td class="px-3 py-2 text-xs pl-7">' + cName + cClass + '</td>'
+                      return '<tr class="border-b hidden child-row bg-slate-50 child-of-'+rowId+'">'
+                        + '<td class="px-3 py-2 text-xs pl-8 border-l-2 border-slate-200">' + cName + cClass + '</td>'
                         + '<td class="px-3 py-2 text-xs text-right">' + (cMcapBn!=null ? cMcapBn.toFixed(2) : '') + '</td>'
                         + '<td class="px-3 py-2 text-xs text-right">' + (cPrice!=null ? Number(cPrice).toFixed(2) : '') + '</td>'
                         + '<td class="px-3 py-2 text-xs text-right">' + cCurrPct + '</td>'
@@ -1662,6 +1667,7 @@ app.get('/index', async (req, res) => {
                     const hidden = rows.length && rows[0].classList.contains('hidden');
                     rows.forEach(tr => tr.classList.toggle('hidden', !hidden));
                     btn.textContent = hidden ? '▼' : '▶';
+                    btn.setAttribute('aria-expanded', hidden ? 'true' : 'false');
                   });
                 });
                 // Header click sorting (Quarterly)
@@ -1726,7 +1732,7 @@ app.get('/index', async (req, res) => {
                   const deltaClass = (deltaPct!=null && deltaPct>0) ? 'text-green-700' : (deltaPct!=null && deltaPct<0 ? 'text-red-700' : '');
                   const cutPill = flags.includes('40% breach') ? '<span class="ml-2 inline-block px-2 py-0.5 rounded-full text-xs bg-red-100 text-red-800">cut candidate</span>' : '';
                   const showCalcs = Boolean(flags);
-                  const toggle = (r.__multi ? '<button class="mr-2 text-xs px-1 py-0.5 border rounded" data-toggle="'+id+'">▶</button>' : '');
+                  const toggle = (r.__multi ? '<button class="toggle-btn mr-2 text-xs px-1.5 py-0.5 border rounded bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-300" aria-expanded="false" data-toggle="'+id+'">▶</button>' : '');
                   let html = (
                     '<tr id="' + id + '" class="border-b ' + rowClass + '">'
                     + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + toggle + displayName + cutPill + '</td>'
@@ -1757,8 +1763,8 @@ app.get('/index', async (req, res) => {
                       const cDA = (childShowCalcs && typeof ch.delta_pct==='number' && aum ? Math.round(aum*Number(ch.delta_pct)).toLocaleString('en-DK') : '');
                       const cVol = (childShowCalcs && typeof ch.delta_pct==='number' && ch.price!=null ? (aum*Number(ch.delta_pct)/Number(ch.price)) : null);
                       const cDtc = (childShowCalcs && cVol!=null && ch.avg_daily_volume!=null && Number(ch.avg_daily_volume)>0 ? (Math.abs(cVol)/Number(ch.avg_daily_volume)).toFixed(2) : '');
-                      return '<tr class="border-b hidden child-of-'+id+'">'
-                        + '<td class="px-3 py-2 text-xs pl-7">'+nm+cls+'</td>'
+                      return '<tr class="border-b hidden child-row bg-slate-50 child-of-'+id+'">'
+                        + '<td class="px-3 py-2 text-xs pl-8 border-l-2 border-slate-200">'+nm+cls+'</td>'
                         + '<td class="px-3 py-2 text-xs text-right">'+(cmcapBn!=null? cmcapBn.toFixed(2): '')+'</td>'
                         + '<td class="px-3 py-2 text-xs text-right">'+(ch.price!=null? Number(ch.price).toFixed(2): '')+'</td>'
                         + '<td class="px-3 py-2 text-xs text-right">'+cWP+'</td>'
@@ -1810,6 +1816,7 @@ app.get('/index', async (req, res) => {
                     const hidden = rows.length && rows[0].classList.contains('hidden');
                     rows.forEach(tr => tr.classList.toggle('hidden', !hidden));
                     btn.textContent = hidden ? '▼' : '▶';
+                    btn.setAttribute('aria-expanded', hidden ? 'true' : 'false');
                   });
                 });
                 // Header click sorting (Daily)
