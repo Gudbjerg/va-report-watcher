@@ -90,6 +90,7 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
         "apikey": SUPABASE_SERVICE_KEY,
         "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "Content-Type": "application/json",
+        # Upsert semantics (requires a UNIQUE constraint on (as_of, ticker))
         "Prefer": "resolution=merge-duplicates",
     }
 
@@ -151,48 +152,37 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
         trimmed = {k: r.get(k) for k in WHITELIST_COLUMNS}
         normalized_payload.append(trimmed)
 
-    if _create_supabase_client is not None:
-        try:
-            client = _create_supabase_client(
-                SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    # Prefer conflict-safe UPSERT to avoid duplicates during concurrent runs
+    upsert_url = f"{SUPABASE_URL}/rest/v1/{table_name}?on_conflict=as_of,ticker"
+    try:
+        resp = requests.post(upsert_url, headers=headers,
+                             json=normalized_payload)
+        if resp.ok:
+            print(
+                f"Upserted {len(normalized_payload)} rows into {table_name}.")
+            return
+        else:
+            print("Upsert failed (", resp.status_code, "):", resp.text)
+            # As a very last resort, fall back to delete+insert (not race-safe)
             try:
-                client.table(table_name).delete().eq('as_of', as_of).execute()
-            except Exception as de:
-                print("Warning: SDK delete failed:", de)
-            try:
-                res = client.table(table_name).insert(
-                    normalized_payload).execute()
-                try:
-                    inserted = len(getattr(res, 'data', []) or [])
-                except Exception:
-                    inserted = len(normalized_payload)
+                delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
+                delete_params = {"as_of": f"eq.{as_of}"}
+                requests.delete(delete_url, headers=headers,
+                                params=delete_params)
+            except Exception:
+                pass
+            insert_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
+            resp2 = requests.post(
+                insert_url, headers=headers, json=normalized_payload)
+            if resp2.ok:
                 print(
-                    f"Inserted {inserted or len(normalized_payload)} rows into {table_name} (SDK).")
+                    f"Inserted {len(normalized_payload)} rows into {table_name} (fallback).")
                 return
-            except Exception as ie:
-                print("SDK insert failed, falling back to raw requests:", ie)
-        except Exception as e:
-            print("Warning: failed to init Supabase SDK, using raw requests:", e)
-
-    delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
-    delete_params = {"as_of": f"eq.{as_of}"}
-    delete_resp = requests.delete(
-        delete_url, headers=headers, params=delete_params)
-    if not delete_resp.ok:
-        print("Warning: delete failed:",
-              delete_resp.status_code, delete_resp.text)
-
-    insert_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
-
-    def _do_insert(rows):
-        return requests.post(insert_url, headers=headers, json=rows)
-
-    insert_resp = _do_insert(normalized_payload)
-    if insert_resp.ok:
-        print(f"Inserted {len(normalized_payload)} rows into {table_name}.")
-        return
-    print("Insert failed:", insert_resp.status_code, insert_resp.text)
-    insert_resp.raise_for_status()
+            print("Insert fallback failed:", resp2.status_code, resp2.text)
+            resp2.raise_for_status()
+    except Exception as e:
+        print("Request to Supabase failed:", e)
+        raise
 
 
 def upsert_index_quarterly(df_pro: pd.DataFrame) -> None:
@@ -211,6 +201,7 @@ def upsert_index_quarterly(df_pro: pd.DataFrame) -> None:
         "apikey": SUPABASE_SERVICE_KEY,
         "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "Content-Type": "application/json",
+        # Upsert semantics (requires UNIQUE (as_of, ticker))
         "Prefer": "resolution=merge-duplicates",
     }
 
@@ -259,22 +250,32 @@ def upsert_index_quarterly(df_pro: pd.DataFrame) -> None:
                     pass
         normalized_payload.append(r)
 
-    # Delete existing for as_of then insert
-    delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
-    delete_params = {"as_of": f"eq.{as_of}"}
-    try:
-        requests.delete(delete_url, headers=headers, params=delete_params)
-    except Exception as de:
-        print("Warning: quarterly delete failed:", de)
-
-    insert_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
-    resp = requests.post(insert_url, headers=headers, json=normalized_payload)
+    # Conflict-safe UPSERT
+    upsert_url = f"{SUPABASE_URL}/rest/v1/{table_name}?on_conflict=as_of,ticker"
+    resp = requests.post(upsert_url, headers=headers, json=normalized_payload)
     if resp.ok:
         print(
-            f"Inserted {len(normalized_payload)} rows into {table_name} (quarterly).")
+            f"Upserted {len(normalized_payload)} rows into {table_name} (quarterly).")
         return
-    print("Quarterly insert failed:", resp.status_code, resp.text)
-    resp.raise_for_status()
+    print("Quarterly upsert failed:", resp.status_code, resp.text)
+    # Last-resort fallback to delete+insert
+    try:
+        delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
+        delete_params = {"as_of": f"eq.{as_of}"}
+        requests.delete(delete_url, headers=headers, params=delete_params)
+        insert_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
+        resp2 = requests.post(insert_url, headers=headers,
+                              json=normalized_payload)
+        if resp2.ok:
+            print(
+                f"Inserted {len(normalized_payload)} rows into {table_name} (quarterly fallback).")
+            return
+        print("Quarterly fallback insert failed:",
+              resp2.status_code, resp2.text)
+        resp2.raise_for_status()
+    except Exception as e:
+        print("Quarterly fallback failed:", e)
+        raise
 
 
 def upsert_index_issuers(df_issuers: pd.DataFrame) -> None:
@@ -293,6 +294,7 @@ def upsert_index_issuers(df_issuers: pd.DataFrame) -> None:
         "apikey": SUPABASE_SERVICE_KEY,
         "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "Content-Type": "application/json",
+        # Upsert semantics (requires UNIQUE (as_of, issuer))
         "Prefer": "resolution=merge-duplicates",
     }
 
@@ -332,21 +334,14 @@ def upsert_index_issuers(df_issuers: pd.DataFrame) -> None:
                     pass
         normalized_payload.append(r)
 
-    # Delete and insert
-    delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
-    delete_params = {"as_of": f"eq.{as_of}"}
-    try:
-        requests.delete(delete_url, headers=headers, params=delete_params)
-    except Exception as de:
-        print("Warning: issuer delete failed:", de)
-
-    insert_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
-    resp = requests.post(insert_url, headers=headers, json=normalized_payload)
+    # Conflict-safe UPSERT on (as_of, issuer)
+    upsert_url = f"{SUPABASE_URL}/rest/v1/{table_name}?on_conflict=as_of,issuer"
+    resp = requests.post(upsert_url, headers=headers, json=normalized_payload)
     if resp.ok:
         print(
-            f"Inserted {len(normalized_payload)} rows into {table_name} (issuers).")
+            f"Upserted {len(normalized_payload)} rows into {table_name} (issuers).")
         return
-    print("Issuer insert failed:", resp.status_code, resp.text)
+    print("Issuer upsert failed:", resp.status_code, resp.text)
     # If table does not exist yet, log and continue without raising
     try:
         if resp.status_code == 404:
@@ -355,4 +350,20 @@ def upsert_index_issuers(df_issuers: pd.DataFrame) -> None:
             return
     except Exception:
         pass
-    resp.raise_for_status()
+    # Last resort: delete+insert
+    try:
+        delete_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
+        delete_params = {"as_of": f"eq.{as_of}"}
+        requests.delete(delete_url, headers=headers, params=delete_params)
+        insert_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
+        resp2 = requests.post(insert_url, headers=headers,
+                              json=normalized_payload)
+        if resp2.ok:
+            print(
+                f"Inserted {len(normalized_payload)} rows into {table_name} (issuers fallback).")
+            return
+        print("Issuer fallback insert failed:", resp2.status_code, resp2.text)
+        resp2.raise_for_status()
+    except Exception as e:
+        print("Issuer fallback failed:", e)
+        raise

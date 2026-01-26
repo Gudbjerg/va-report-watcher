@@ -53,6 +53,47 @@ let checkEsundhedFn = null;
 // Lightweight registry of discovered watchers for the dashboard
 let discoveredWatchers = [];
 
+// --- Issuer key + class helpers (server-side, used by grouping endpoints) ---
+function _parseTicker(tk) {
+  const t = String(tk || '').toUpperCase();
+  if (!t) return { base: '', cls: null, exch: null };
+  const preDash = t.split('-')[0];
+  const m = preDash.match(/^(.*?)(?:\.([A-Z]))?$/);
+  const base = (m && m[1]) ? m[1].replace(/\./g, '') : preDash.replace(/\./g, '');
+  const cls = (m && m[2]) ? m[2] : null; // A..Z class
+  const exch = (t.includes('-') ? t.split('-').slice(1).join('-') : null);
+  return { base, cls, exch };
+}
+function _stripClassWords(s) {
+  return String(s || '')
+    .replace(/\b(?:CLASS|CLA|SER\.?|SERIES)\s+[A-Z](?![A-Z])/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+function _issuerKeyFromName(name) {
+  let s = String(name || '').toUpperCase();
+  s = s.replace(/\b(?:CLASS|CLA|SER\.?|SERIES)\s+[A-Z](?![A-Z])/g, '');
+  s = s.replace(/\b(A\/S|AB|PLC|OYJ|OY|ASA|AS|SA|SE)\b/g, '');
+  s = s.replace(/\s{2,}/g, ' ').trim();
+  return s;
+}
+function _issuerKeyFromRow(r) {
+  if (r && r.ticker) {
+    const p = _parseTicker(r.ticker);
+    if (p.base) return p.base.toUpperCase();
+  }
+  const nm = r && (r.issuer || r.name);
+  return _issuerKeyFromName(nm).toUpperCase();
+}
+function _classFromRow(r) {
+  const t = r && r.ticker ? String(r.ticker) : '';
+  const p = _parseTicker(t);
+  if (p.cls) return p.cls;
+  const n = String(r && (r.name || r.issuer) || '').toUpperCase();
+  const m = n.match(/\b(?:CLASS|CLA|SER\.?|SERIES)\s+([A-Z])(?![A-Z])/);
+  return m && m[1] ? m[1] : null;
+}
+
 function discoverWatchers() {
   // Try project-first locations
   try {
@@ -326,6 +367,27 @@ async function fetchIndexRows(indexId) {
     .limit(5000);
   if (error) throw error;
   return data || [];
+}
+
+// Deduplicate rows by a key, keeping the row with the latest updated_at
+function dedupeLatestBy(rows, key) {
+  try {
+    const map = new Map();
+    for (const r of (rows || [])) {
+      const k = String(r[key] ?? '').toUpperCase();
+      if (!k) continue;
+      const u = r.updated_at ? new Date(r.updated_at).getTime() : 0;
+      const prev = map.get(k);
+      if (!prev || u > prev.__u) {
+        const copy = Object.assign({}, r);
+        copy.__u = u;
+        map.set(k, copy);
+      }
+    }
+    return Array.from(map.values()).map(({ __u, ...rest }) => rest);
+  } catch (e) {
+    return rows || [];
+  }
 }
 
 function rankBy(rows, key, desc = true) {
@@ -709,9 +771,83 @@ app.get('/api/index/:indexId/constituents', async (req, res) => {
         .eq('as_of', asOf)
         .order('capped_weight', { ascending: false });
       if (err2) throw err2;
-      rows = Array.isArray(data) ? data : [];
+      const raw = Array.isArray(data) ? data : [];
+      const lastUpdated = raw.reduce((mx, r) => {
+        const t = r && r.updated_at ? new Date(r.updated_at).getTime() : 0;
+        return t > mx ? t : mx;
+      }, 0);
+      // Dedupe by ticker, keep latest updated_at
+      rows = dedupeLatestBy(raw, 'ticker');
+      return res.json({ asOf, lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null), rows });
     }
-    res.json({ asOf, rows });
+    res.json({ asOf, lastUpdated: null, rows: [] });
+  } catch (e) {
+    res.status(500).json({ error: e && e.message ? e.message : String(e) });
+  }
+});
+
+// API: grouped constituents by issuer with class children (server-side aggregation)
+app.get('/api/index/:indexId/constituents_grouped', async (req, res) => {
+  try {
+    const indexId = req.params.indexId;
+    const tableName = tableForIndex(indexId);
+    const { data: dates, error: err1 } = await supabase
+      .from(tableName)
+      .select('as_of')
+      .order('as_of', { ascending: false })
+      .limit(1);
+    if (err1) throw err1;
+    const asOf = dates && dates[0] ? dates[0].as_of : null;
+    if (!asOf) return res.json({ asOf: null, lastUpdated: null, rows: [] });
+    const { data, error: err2 } = await supabase
+      .from(tableName)
+      .select('*')
+      .eq('as_of', asOf);
+    if (err2) throw err2;
+    const raw = Array.isArray(data) ? data : [];
+    // latest updated_at across the snapshot
+    const lastUpdated = raw.reduce((mx, r) => {
+      const t = r && r.updated_at ? new Date(r.updated_at).getTime() : 0;
+      return t > mx ? t : mx;
+    }, 0);
+    // group by issuer key
+    const groups = new Map();
+    for (const r of raw) {
+      const key = _issuerKeyFromRow(r);
+      const g = groups.get(key) || { __key: key, rows: [] };
+      g.rows.push(r);
+      groups.set(key, g);
+    }
+    const rows = [];
+    for (const g of groups.values()) {
+      const ch = g.rows;
+      // aggregate issuer-level sums per methodology (weights already reflect issuer distribution)
+      const agg = ch.reduce((acc, r) => {
+        acc.weight += Number(r.weight || 0);
+        acc.capped_weight += Number(r.capped_weight || 0);
+        acc.mcap += Number(r.mcap || r.market_cap || 0);
+        acc.delta_pct += Number(typeof r.delta_pct === 'number' ? r.delta_pct : 0);
+        if (r.flags) acc.flags.push(String(r.flags));
+        return acc;
+      }, { weight: 0, capped_weight: 0, mcap: 0, delta_pct: 0, flags: [] });
+      const first = ch[0] || {};
+      const children = ch.map(r => ({ ...r, __class: _classFromRow(r) }));
+      rows.push({
+        ...first,
+        name: _stripClassWords(first.name || first.issuer || first.ticker || ''),
+        issuer: _stripClassWords(first.issuer || first.name || ''),
+        weight: agg.weight,
+        capped_weight: agg.capped_weight,
+        mcap: agg.mcap,
+        delta_pct: agg.delta_pct,
+        flags: Array.from(new Set(agg.flags.filter(Boolean))).join('; '),
+        __multi: children.length > 1,
+        __children: children,
+      });
+    }
+    // order by capped_weight desc for consistency
+    rows.sort((a, b) => Number(b.capped_weight || 0) - Number(a.capped_weight || 0));
+    return res.json({ asOf, lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null), rows });
   } catch (e) {
     res.status(500).json({ error: e && e.message ? e.message : String(e) });
   }
@@ -738,9 +874,15 @@ app.get('/api/index/:indexId/issuers', async (req, res) => {
         .eq('as_of', asOf)
         .order('mcap_uncapped', { ascending: false });
       if (err2) throw err2;
-      rows = Array.isArray(data) ? data : [];
+      const raw = Array.isArray(data) ? data : [];
+      const lastUpdated = raw.reduce((mx, r) => {
+        const t = r && r.updated_at ? new Date(r.updated_at).getTime() : 0;
+        return t > mx ? t : mx;
+      }, 0);
+      rows = dedupeLatestBy(raw, 'issuer');
+      return res.json({ asOf, lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null), rows });
     }
-    res.json({ asOf, rows });
+    res.json({ asOf, lastUpdated: null, rows: [] });
   } catch (e) {
     res.status(500).json({ error: e && e.message ? e.message : String(e) });
   }
@@ -770,13 +912,91 @@ app.get('/api/index/:indexId/quarterly', async (req, res) => {
         .order('mcap_uncapped', { ascending: false });
       if (err2) throw err2;
       // Map to API shape expected by UI without forcing DB schema changes
-      rows = (Array.isArray(data) ? data : []).map(r => ({
+      const raw = (Array.isArray(data) ? data : []).map(r => ({
         ...r,
         old_weight: (r.curr_weight_capped ?? r.curr_weight_uncapped ?? null),
         new_weight: (typeof r.weight !== 'undefined' ? r.weight : null)
       }));
+      const lastUpdated = raw.reduce((mx, r) => {
+        const t = r && r.updated_at ? new Date(r.updated_at).getTime() : 0;
+        return t > mx ? t : mx;
+      }, 0);
+      rows = dedupeLatestBy(raw, 'ticker');
+      return res.json({ asOf, lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null), rows });
     }
-    res.json({ asOf, rows });
+    res.json({ asOf, lastUpdated: null, rows: [] });
+  } catch (e) {
+    res.status(500).json({ error: e && e.message ? e.message : String(e) });
+  }
+});
+
+// API: issuer-level quarterly aggregation with class children
+app.get('/api/index/:indexId/quarterly_grouped', async (req, res) => {
+  try {
+    const indexId = req.params.indexId;
+    const tableName = quarterlyTableForIndex(indexId);
+    if (!tableName) return res.json({ asOf: null, lastUpdated: null, rows: [] });
+    const { data: dates, error: err1 } = await supabase
+      .from(tableName)
+      .select('as_of')
+      .order('as_of', { ascending: false })
+      .limit(1);
+    if (err1) throw err1;
+    const asOf = dates && dates[0] ? dates[0].as_of : null;
+    if (!asOf) return res.json({ asOf: null, lastUpdated: null, rows: [] });
+    const { data, error: err2 } = await supabase
+      .from(tableName)
+      .select('*')
+      .eq('as_of', asOf);
+    if (err2) throw err2;
+    const raw0 = Array.isArray(data) ? data : [];
+    const raw = raw0.map(r => ({
+      ...r,
+      curr_capped: (typeof r.curr_weight_capped === 'number') ? r.curr_weight_capped : (typeof r.curr_weight_uncapped === 'number' ? r.curr_weight_uncapped : (typeof r.old_weight === 'number' ? r.old_weight : 0)),
+      new_w: (typeof r.weight === 'number') ? r.weight : (typeof r.new_weight === 'number' ? r.new_weight : 0),
+      mcap_use: (typeof r.mcap_uncapped === 'number') ? r.mcap_uncapped : (typeof r.mcap === 'number' ? r.mcap : 0),
+    }));
+    const lastUpdated = raw.reduce((mx, r) => {
+      const t = r && r.updated_at ? new Date(r.updated_at).getTime() : 0;
+      return t > mx ? t : mx;
+    }, 0);
+    const groups = new Map();
+    for (const r of raw) {
+      const key = _issuerKeyFromRow(r);
+      const g = groups.get(key) || { __key: key, rows: [] };
+      g.rows.push(r);
+      groups.set(key, g);
+    }
+    const rows = [];
+    for (const g of groups.values()) {
+      const ch = g.rows;
+      const agg = ch.reduce((acc, r) => {
+        acc.curr += Number(r.curr_capped || 0);
+        acc.proposed += Number(r.new_w || 0);
+        acc.mcap += Number(r.mcap_use || 0);
+        if (r.flags) acc.flags.push(String(r.flags));
+        return acc;
+      }, { curr: 0, proposed: 0, mcap: 0, flags: [] });
+      const delta_pct = agg.proposed - agg.curr;
+      const first = ch[0] || {};
+      const children = ch.map(r => ({ ...r, __class: _classFromRow(r) }));
+      rows.push({
+        ...first,
+        name: _stripClassWords(first.name || first.issuer || first.ticker || ''),
+        issuer: _stripClassWords(first.issuer || first.name || ''),
+        mcap_uncapped: agg.mcap,
+        old_weight: agg.curr,
+        new_weight: agg.proposed,
+        delta_pct,
+        delta_vol: null,
+        days_to_cover: null,
+        flags: Array.from(new Set(agg.flags.filter(Boolean))).join('; '),
+        __multi: children.length > 1,
+        __children: children,
+      });
+    }
+    rows.sort((a, b) => Number(b.mcap_uncapped || 0) - Number(a.mcap_uncapped || 0));
+    return res.json({ asOf, lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null), rows });
   } catch (e) {
     res.status(500).json({ error: e && e.message ? e.message : String(e) });
   }
@@ -1067,14 +1287,14 @@ app.get('/index', async (req, res) => {
 
             async function loadQuarterly() {
               try {
-                const r = await fetch('/api/index/' + selected + '/quarterly');
+                const r = await fetch('/api/index/' + selected + '/quarterly_grouped');
                 const json = await r.json();
-                const rows0 = json.rows || [];
-                const rows = groupByCompanyQuarterly(rows0);
+                const rows = json.rows || [];
                 const region = regionFor(selected);
                 const aum = (selectedMeta.aum != null ? selectedMeta.aum : (aumByRegion[region] || null));
                 const ccy = selectedMeta.ccy || currencyByRegion[region] || '';
-                document.getElementById('quarterlyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Rows: ' + rows.length + ' · AUM (' + (ccy || 'CCY') + '): ' + (aum ? aum.toLocaleString('en-DK') : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/quarterly">JSON</a>';
+                const lastUpdQ = (json.lastUpdated ? new Date(json.lastUpdated).toLocaleString('da-DK') : 'unknown');
+                document.getElementById('quarterlyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Updated: ' + lastUpdQ + ' · Rows: ' + rows.length + ' · AUM (' + (ccy || 'CCY') + '): ' + (aum ? aum.toLocaleString('en-DK') : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/quarterly_grouped">JSON</a>';
                 quarterlyRowsCache = rows.slice();
                 // Build lookups from daily cache
                 // - ticker -> display name
@@ -1153,8 +1373,10 @@ app.get('/index', async (req, res) => {
                     (deltaVol != null && advM != null && advM > 0) ? (Math.abs(deltaVol) / advM) : (r.days_to_cover != null ? Number(r.days_to_cover) : null)
                   ));
                   const deltaClass = (deltaPct!=null && deltaPct>0) ? 'text-green-700' : (deltaPct!=null && deltaPct<0 ? 'text-red-700' : '');
-                  return '<tr class="border-b">'
-                    + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + issuer + '</td>'
+                  const rowId = 'q-' + sanitizeId(issuer);
+                  const toggle = (r.__multi ? '<button class="mr-2 text-xs px-1 py-0.5 border rounded" data-toggle="'+rowId+'">▶</button>' : '');
+                  let html = '<tr class="border-b"'
+                    + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + toggle + issuer + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (mcapBn != null && mcapBn>0 ? mcapBn.toFixed(2) : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (price != null ? price.toFixed(2) : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right" title="' + (currWPct!=null? currWPct.toFixed(2)+'%':'') + '">' + (currWPct != null ? currWPct.toFixed(2) + '%' : '') + '</td>'
@@ -1164,6 +1386,38 @@ app.get('/index', async (req, res) => {
                     + '<td class="px-3 py-2 text-sm text-right">' + (deltaVol != null ? deltaVol.toFixed(2) : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (dtc != null ? dtc.toFixed(2) : '') + '</td>'
                     + '</tr>';
+                  if (r.__multi && Array.isArray(r.__children)) {
+                    const childRows = r.__children.map(ch => {
+                      const cTk = (ch.ticker || '').toString().toUpperCase();
+                      const cName = (nameByTicker.get(cTk) || ch.name || ch.issuer || ch.ticker || '');
+                      const cClass = ch.__class ? (' (' + ch.__class + ')') : '';
+                      const cMcapBn = (ch.mcap != null ? Number(ch.mcap)/1e9 : (ch.mcap_uncapped != null ? Number(ch.mcap_uncapped)/1e9 : null));
+                      const cPrice = (priceByTicker.get(cTk) ?? (ch.price != null ? Number(ch.price) : null));
+                      const cCurr = (typeof ch.curr_weight_capped==='number' ? Number(ch.curr_weight_capped) : (typeof ch.curr_weight_uncapped==='number' ? Number(ch.curr_weight_uncapped) : (typeof ch.old_weight==='number' ? Number(ch.old_weight) : null)));
+                      const cNew = (typeof ch.weight==='number' ? Number(ch.weight) : (typeof ch.new_weight==='number' ? Number(ch.new_weight) : null));
+                      const cDelta = (typeof ch.delta_pct==='number' ? Number(ch.delta_pct) : (cCurr!=null && cNew!=null ? (cNew - cCurr) : null));
+                      const cDeltaAmt = (aum && cDelta != null ? aum * cDelta : null);
+                      const cAdvM = advByTickerMillions.get(cTk);
+                      const cVol = (cDeltaAmt != null && cPrice != null ? (cDeltaAmt/Number(cPrice)) : null);
+                      const cDtc = (cVol != null && cAdvM != null && cAdvM > 0 ? (Math.abs(cVol)/cAdvM) : null);
+                      const cCurrPct = (cCurr!=null ? (cCurr*100).toFixed(2)+'%' : '');
+                      const cNewPct = (cNew!=null ? (cNew*100).toFixed(2)+'%' : '');
+                      const cDeltaPct = (cDelta!=null ? (cDelta*100).toFixed(2)+'%' : '');
+                      return '<tr class="border-b hidden child-of-'+rowId+'">'
+                        + '<td class="px-3 py-2 text-xs pl-7">' + cName + cClass + '</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">' + (cMcapBn!=null ? cMcapBn.toFixed(2) : '') + '</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">' + (cPrice!=null ? Number(cPrice).toFixed(2) : '') + '</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">' + cCurrPct + '</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">' + cNewPct + '</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">' + cDeltaPct + '</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">' + (cDeltaAmt!=null ? Math.round(cDeltaAmt).toLocaleString('en-DK') : '') + '</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">' + (cVol!=null ? Number(cVol).toFixed(2) : '') + '</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">' + (cDtc!=null ? Number(cDtc).toFixed(2) : '') + '</td>'
+                      + '</tr>';
+                    }).join('');
+                    html += childRows;
+                  }
+                  return html;
                 }).join('');
                 const header = '<tr>'
                   + '<th class="px-3 py-2 sticky left-0 bg-gray-100 cursor-pointer" data-qsort="issuer">Company Name</th>'
@@ -1210,6 +1464,16 @@ app.get('/index', async (req, res) => {
                     const a = document.createElement('a'); a.href=url; a.download=selected+'_quarterly.csv'; a.click(); URL.revokeObjectURL(url);
                   } catch(e){}
                 };
+                // Expand/collapse handlers (Quarterly)
+                document.querySelectorAll('#quarterlyTable [data-toggle]').forEach(btn => {
+                  btn.addEventListener('click', () => {
+                    const id = btn.getAttribute('data-toggle');
+                    const rows = document.querySelectorAll('.child-of-' + id);
+                    const hidden = rows.length && rows[0].classList.contains('hidden');
+                    rows.forEach(tr => tr.classList.toggle('hidden', !hidden));
+                    btn.textContent = hidden ? '▼' : '▶';
+                  });
+                });
                 // Header click sorting (Quarterly)
                 document.querySelectorAll('#quarterlyTable th[data-qsort]').forEach(th => {
                   th.addEventListener('click', () => {
@@ -1230,12 +1494,12 @@ app.get('/index', async (req, res) => {
 
             async function loadDaily() {
               try {
-                const r = await fetch('/api/index/' + selected + '/constituents');
+                const r = await fetch('/api/index/' + selected + '/constituents_grouped');
                 const json = await r.json();
-                const rows0 = json.rows || [];
-                const rows = groupByCompanyDaily(rows0);
+                const rows = json.rows || [];
                 const totalW = rows.reduce((s, rr) => s + (Number(rr.weight) || 0), 0);
-                document.getElementById('dailyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Rows: ' + rows.length + ' · Sum(weight): ' + (totalW ? totalW.toFixed(6) : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/constituents">JSON</a>';
+                const lastUpdD = (json.lastUpdated ? new Date(json.lastUpdated).toLocaleString('da-DK') : 'unknown');
+                document.getElementById('dailyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Updated: ' + lastUpdD + ' · Rows: ' + rows.length + ' · Sum(weight): ' + (totalW ? totalW.toFixed(6) : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/constituents_grouped">JSON</a>';
                 const top = rows.slice(0, 25);
                 const region = regionFor(selected);
                 const aum = (selectedMeta.aum != null ? selectedMeta.aum : (aumByRegion[region] || null));
@@ -1265,9 +1529,10 @@ app.get('/index', async (req, res) => {
                   const deltaClass = (deltaPct!=null && deltaPct>0) ? 'text-green-700' : (deltaPct!=null && deltaPct<0 ? 'text-red-700' : '');
                   const cutPill = flags.includes('40% breach') ? '<span class="ml-2 inline-block px-2 py-0.5 rounded-full text-xs bg-red-100 text-red-800">cut candidate</span>' : '';
                   const showCalcs = Boolean(flags);
-                  return (
+                  const toggle = (r.__multi ? '<button class="mr-2 text-xs px-1 py-0.5 border rounded" data-toggle="'+id+'">▶</button>' : '');
+                  let html = (
                     '<tr id="' + id + '" class="border-b ' + rowClass + '">'
-                    + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + displayName + cutPill + '</td>'
+                    + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + toggle + displayName + cutPill + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (mcapBn != null ? mcapBn.toFixed(2) : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (!r.__multi && r.price != null ? Number(r.price).toFixed(2) : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right" title="' + (wPct!=null? wPct.toFixed(2)+'%':'') + '">' + (wPct != null ? wPct.toFixed(2) + '%' : '') + '</td>'
@@ -1278,6 +1543,35 @@ app.get('/index', async (req, res) => {
                     + '<td class="px-3 py-2 text-sm">' + (flags ? '<span class="text-red-700 font-semibold" title="' + flags + '">' + flags + '</span>' : '') + '</td>'
                     + '</tr>'
                   );
+                  if (r.__multi && Array.isArray(r.__children)){
+                    const childRows = r.__children.map(ch => {
+                      const nm = (ch.name || ch.issuer || ch.ticker || '');
+                      const cls = ch.__class ? (' ('+ch.__class+')') : '';
+                      const cmcap = (ch.market_cap != null ? Number(ch.market_cap) : (ch.mcap != null ? Number(ch.mcap) : null));
+                      const cmcapBn = (cmcap != null ? cmcap/1e9 : null);
+                      const cW = (ch.capped_weight != null ? Number(ch.capped_weight) : (ch.weight != null ? Number(ch.weight) : null));
+                      const cT = (typeof ch.delta_pct==='number' && cW!=null ? (cW + Number(ch.delta_pct)) : null);
+                      const cWP = (cW!=null ? (cW*100).toFixed(2)+'%' : '');
+                      const cTP = (cT!=null ? (cT*100).toFixed(2)+'%' : '');
+                      const cDP = (typeof ch.delta_pct==='number' ? (Number(ch.delta_pct)*100).toFixed(2)+'%' : '');
+                      const cDA = (typeof ch.delta_pct==='number' && aum ? Math.round(aum*Number(ch.delta_pct)).toLocaleString('en-DK') : '');
+                      const cVol = (typeof ch.delta_pct==='number' && ch.price!=null ? (aum*Number(ch.delta_pct)/Number(ch.price)) : null);
+                      const cDtc = (cVol!=null && ch.avg_daily_volume!=null && Number(ch.avg_daily_volume)>0 ? (Math.abs(cVol)/Number(ch.avg_daily_volume)).toFixed(2) : '');
+                      return '<tr class="border-b hidden child-of-'+id+'">'
+                        + '<td class="px-3 py-2 text-xs pl-7">'+nm+cls+'</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">'+(cmcapBn!=null? cmcapBn.toFixed(2): '')+'</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">'+(ch.price!=null? Number(ch.price).toFixed(2): '')+'</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">'+cWP+'</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">'+cTP+'</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">'+cDP+'</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">'+cDA+'</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">'+(cVol!=null? Number(cVol).toFixed(2): '')+'</td>'
+                        + '<td class="px-3 py-2 text-xs text-right">'+cDtc+'</td>'
+                      + '</tr>';
+                    }).join('');
+                    html += childRows;
+                  }
+                  return html;
                 }).join('');
                 // Warnings panel and badge
                 try {
@@ -1300,6 +1594,7 @@ app.get('/index', async (req, res) => {
                 try {
                   const summary = [];
                   summary.push(badge('As of: ' + (json.asOf || 'unknown')));
+                  summary.push(badge('Updated: ' + (json.lastUpdated ? new Date(json.lastUpdated).toLocaleString('da-DK') : 'unknown')));
                   summary.push(badge('AUM ' + (ccy || '') + ': ' + (aum ? aum.toLocaleString('en-DK') : 'n/a')));
                   summary.push(badge('Rows: ' + rows.length));
                   document.getElementById('summaryBar').innerHTML = summary.join(' ');
@@ -1307,6 +1602,16 @@ app.get('/index', async (req, res) => {
                 // Table with controls
                 const controls = '<div class="flex items-center gap-2 mb-2"><button id="dailyTop25" class="px-2 py-1 border rounded text-xs">Top 25</button><button id="dailyTop100" class="px-2 py-1 border rounded text-xs">Show 100</button><button id="dailyCsv" class="px-2 py-1 border rounded text-xs">Export CSV</button></div>';
                 document.getElementById('dailyTable').innerHTML = controls + '<div class="overflow-auto"><table class="w-full text-left"><thead class="bg-gray-100"><tr><th class="px-3 py-2 sticky left-0 bg-gray-100 cursor-pointer" data-dsort="issuer">Company Name</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="mcap">Market Cap, bn</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="price">Price</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="weight">Current (capped)</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="capped_weight">Target (capped)</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="delta_pct">Delta, %</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="delta_amt">Delta, ' + (ccy || 'Amt') + '</th><th class="px-3 py-2 text-right cursor-pointer" data-dsort="dtc">Days to Cover</th><th class="px-3 py-2">Flags</th></tr></thead><tbody>' + (trs || '<tr><td class="px-3 py-4 text-sm text-slate-500" colspan="9">No data.</td></tr>') + '</tbody></table></div>';
+                // Expand/collapse handlers (Daily)
+                document.querySelectorAll('#dailyTable [data-toggle]').forEach(btn => {
+                  btn.addEventListener('click', () => {
+                    const id = btn.getAttribute('data-toggle');
+                    const rows = document.querySelectorAll('.child-of-' + id);
+                    const hidden = rows.length && rows[0].classList.contains('hidden');
+                    rows.forEach(tr => tr.classList.toggle('hidden', !hidden));
+                    btn.textContent = hidden ? '▼' : '▶';
+                  });
+                });
                 // Header click sorting (Daily)
                 function getDailyVal(row){
                   const issuer = (row.name || row.issuer || row.ticker || '').toLowerCase();

@@ -156,7 +156,7 @@ def _build_formulas(region: str) -> Dict[str, Any]:
     formulas = [
         'FSYM_TICKER_EXCHANGE(0,"ID")',
         'FG_COMPANY_NAME',
-        'P_PRICE(0)',
+        'P_PRICE(NOW)',
         f'EXG_OMX_SHARES(0,{shares_symbol},PI,{ccy},ND)',
         f'EXG_OMX_WEIGHT(0,{weight_symbol},PI,{ccy},ND)',
         # Preferred 30D average volumes (both units) — shares and millions
