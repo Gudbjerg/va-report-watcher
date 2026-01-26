@@ -33,11 +33,21 @@ def run_update() -> None:
     # Always compute DAILY status for constituents (never write quarterly logic into daily table)
     df_status = build_status(df_raw, as_of=as_of, index_id=args.index_id,
                              region=args.region, quarterly=False)
-    # Lightweight preview of computed weights (helps verify capping logic)
+    # Lightweight preview: show current capped vs proposed weights (daily),
+    # sorted by current capped for clarity. This avoids confusion with raw
+    # OMX weights and helps verify capping/exception logic at a glance.
     try:
-        preview_cols = ["ticker", "name", "weight", "capped_weight"]
-        ranked = df_status.sort_values("weight", ascending=False).head(10)
-        print("Computed top weights (preview):")
+        preview_cols = [
+            "ticker",
+            "name",
+            "curr_weight_capped",
+            "weight",
+            "capped_weight",
+            "delta_pct",
+        ]
+        ranked = df_status.sort_values(
+            "curr_weight_capped", ascending=False).head(10)
+        print("Daily preview — current capped vs proposed (top 10):")
         print(ranked[preview_cols].to_string(index=False))
     except Exception:
         pass
@@ -89,7 +99,7 @@ def run_update() -> None:
                     25).to_string(index=False))
             except Exception:
                 pass
-            print("Quarterly proforma preview:")
+            print("Quarterly proforma preview (top 12):")
             # Show both current uncapped and capped weights alongside target
             print(df_pro[["ticker", "name", "curr_weight_uncapped", "curr_weight_capped", "weight", "delta_pct",
                           "delta_ccy", "delta_vol", "days_to_cover"]].head(12).to_string(index=False))
