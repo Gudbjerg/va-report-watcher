@@ -81,6 +81,7 @@ def _apply_quarterly_exceptions(issuers: pd.DataFrame, params: Params) -> Dict[s
 
     init = issuers[["issuer", "initWeight_uncapped"]].copy().sort_values(
         "initWeight_uncapped", ascending=False).reset_index(drop=True)
+    top_set = set(init.head(top_n)["issuer"].tolist())
     fixed: Dict[str, float] = {}
     for _, row in init.head(top_n).iterrows():
         fixed[row["issuer"]] = top_cap
@@ -99,10 +100,46 @@ def _apply_quarterly_exceptions(issuers: pd.DataFrame, params: Params) -> Dict[s
 
     while True:
         t = tentative_weights()
-        violators = [k for k, v in t.items(
-        ) if k not in fixed and v > other_cap]
+        # Enforce non-top issuers <= other_cap; top-set fixed at top_cap
+        violators = [k for k, v in t.items() if (k not in fixed) and (
+            k not in top_set) and (v > other_cap + 1e-12)]
         if not violators:
-            return t
+            # Final normalization pass and enforcement
+            # Clamp tops exactly to top_cap; clamp others to other_cap if above
+            final: Dict[str, float] = {}
+            for _, row in init.iterrows():
+                issuer = row["issuer"]
+                val = t.get(issuer, 0.0)
+                if issuer in top_set:
+                    val = top_cap
+                elif val > other_cap:
+                    val = other_cap
+                final[issuer] = float(val)
+            # Rebalance leftover to the remaining free (non-top, non-capped-at-limit) proportionally by init weights
+            sum_final = sum(final.values())
+            remainder = max(0.0, 1.0 - sum_final)
+            if remainder > 1e-12:
+                free = init[~init["issuer"].isin(top_set)].copy()
+                # Exclude ones already capped at other_cap in final
+                free["is_capped"] = free["issuer"].map(
+                    lambda x: final.get(x, 0.0) >= other_cap - 1e-12)
+                free_pool = free[~free["is_capped"]]
+                free_total = free_pool["initWeight_uncapped"].sum() or 1.0
+                for _, row in free_pool.iterrows():
+                    issuer = row["issuer"]
+                    add = (row["initWeight_uncapped"] / free_total) * remainder
+                    final[issuer] = final.get(issuer, 0.0) + float(add)
+            # Log any remaining breaches (diagnostics)
+            try:
+                breaches = [(k, v) for k, v in final.items() if (
+                    (k in top_set and v > top_cap + 1e-9) or (k not in top_set and v > other_cap + 1e-9))]
+                if breaches:
+                    print(
+                        "[quarterly] cap enforcement: breaches after finalize:", breaches[:8])
+            except Exception:
+                pass
+            return final
+        # Fix highest violator to other_cap and iterate
         violators.sort(key=lambda k: t[k], reverse=True)
         fixed[violators[0]] = other_cap
 
