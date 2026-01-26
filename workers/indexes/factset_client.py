@@ -156,7 +156,7 @@ def _build_formulas(region: str) -> Dict[str, Any]:
     formulas = [
         'FSYM_TICKER_EXCHANGE(0,"ID")',
         'FG_COMPANY_NAME',
-        'P_PRICE(NOW)',
+        'FG_PRICE(NOW)',
         f'EXG_OMX_SHARES(0,{shares_symbol},PI,{ccy},ND)',
         f'EXG_OMX_WEIGHT(0,{weight_symbol},PI,{ccy},ND)',
         # Preferred 30D average volumes (both units) — shares and millions
@@ -233,7 +233,7 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
     rename_map: Dict[str, str] = {
         'FSYM_TICKER_EXCHANGE(0,"ID")': 'ticker',
         'FG_COMPANY_NAME': 'name',
-        'P_PRICE(0)': 'price',
+        'FG_PRICE(NOW)': 'price',
         # legacy alias if ever nonzero
         'P_VOL_AVG(-1/0/0)': 'avg_30d_volume_millions',
         'P_VOLUME_AVG(0,-1/0/0,0)': 'avg_30d_volume_shares',
@@ -242,7 +242,7 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
         # HTTP snake-case fallbacks
         "fsym_ticker_exchange_0_id_": "ticker",
         "fg_company_name": "name",
-        "p_price_0_": "price",
+        "fg_price_now_": "price",
         "p_vol_avg_-1_0_0_": "avg_30d_volume_millions",
         "p_volume_avg_0_-1_0_0_0_": "avg_30d_volume_shares",
         "p_volume_avg_0_-1_0_0_": "avg_30d_volume_millions_raw",
