@@ -521,6 +521,18 @@ async function fetchIndexRows(indexId) {
   return data || [];
 }
 
+// Helper: fetch rows for an index at a specific as_of (exact match)
+async function fetchIndexRowsByAsOf(indexId, asOf) {
+  const table = tableForIndex(indexId);
+  const { data, error } = await supabase
+    .from(table)
+    .select('*')
+    .eq('as_of', asOf)
+    .limit(5000);
+  if (error) throw error;
+  return data || [];
+}
+
 // Deduplicate rows by a key, keeping the row with the latest updated_at
 function dedupeLatestBy(rows, key) {
   try {
@@ -998,6 +1010,8 @@ app.get('/api/index/:indexId/quarterly_grouped', async (req, res) => {
     const indexId = req.params.indexId;
     const tableName = quarterlyTableForIndex(indexId);
     if (!tableName) return res.json({ asOf: null, lastUpdated: null, rows: [] });
+
+    // Get latest as_of (date) for quarterly
     const { data: dates, error: err1 } = await supabase
       .from(tableName)
       .select('as_of')
@@ -1006,71 +1020,99 @@ app.get('/api/index/:indexId/quarterly_grouped', async (req, res) => {
     if (err1) throw err1;
     const asOf = dates && dates[0] ? dates[0].as_of : null;
     if (!asOf) return res.json({ asOf: null, lastUpdated: null, rows: [] });
-    const { data, error: err2 } = await supabase
-      .from(tableName)
-      .select('*')
-      .eq('as_of', asOf);
-    if (err2) throw err2;
-    const raw0 = Array.isArray(data) ? data : [];
-    const rawBasic = raw0.map(r => ({
-      ...r,
-      // Keep weights distinct: uncapped vs capped vs proforma target
-      curr_uncapped: (typeof r.curr_weight_uncapped === 'number') ? r.curr_weight_uncapped : null,
-      curr_capped: (typeof r.curr_weight_capped === 'number') ? r.curr_weight_capped : (typeof r.old_weight === 'number' ? r.old_weight : null),
-      target_w: (typeof r.new_weight === 'number') ? r.new_weight : (typeof r.weight === 'number' ? r.weight : null),
-      mcap_use: (typeof r.mcap_uncapped === 'number') ? r.mcap_uncapped : (typeof r.mcap === 'number' ? r.mcap : 0),
-    }));
-    // Server-side enrichment: attach price/ADV from latest Daily and compute delta amount/volume/DTC
-    const meta = await getIndexMeta(indexId);
-    const aum = (meta && meta.aum != null) ? Number(meta.aum) : 0;
-    let dailyRows = [];
+
+    // Determine a cutoff timestamp based on latest updated_at within this as_of (purely defensive)
+    let qCutoff = null;
     try {
-      dailyRows = await fetchLatestIndexRows(indexId);
-    } catch (e) {
-      dailyRows = [];
-    }
+      const { data: qmax } = await supabase
+        .from(tableName)
+        .select('updated_at')
+        .eq('as_of', asOf)
+        .order('updated_at', { ascending: false })
+        .limit(1);
+      qCutoff = qmax && qmax[0] ? qmax[0].updated_at : null;
+    } catch { }
+
+    // Load quarterly rows (limit to as_of and <= cutoff if available)
+    let qQuery = supabase.from(tableName).select('*').eq('as_of', asOf);
+    if (qCutoff) qQuery = qQuery.lte('updated_at', qCutoff);
+    const { data: qRowsRaw, error: err2 } = await qQuery;
+    if (err2) throw err2;
+    const qRows = Array.isArray(qRowsRaw) ? qRowsRaw : [];
+
+    // Normalize quarterly rows: keep distinct current capped/uncapped and target
+    const qNorm = qRows.map(r => ({
+      ...r,
+      curr_weight_uncapped: (typeof r.curr_weight_uncapped === 'number') ? Number(r.curr_weight_uncapped) : null,
+      curr_weight_capped: (typeof r.curr_weight_capped === 'number') ? Number(r.curr_weight_capped) : (typeof r.old_weight === 'number' ? Number(r.old_weight) : null),
+      new_weight: (typeof r.new_weight === 'number') ? Number(r.new_weight) : (typeof r.weight === 'number' ? Number(r.weight) : null),
+      mcap_use: (typeof r.mcap_uncapped === 'number') ? Number(r.mcap_uncapped) : (typeof r.mcap === 'number' ? Number(r.mcap) : 0),
+    }));
+
+    // Try to enrich from Daily snapshot with the same as_of and not newer than quarterly cutoff
+    const dailyTable = tableForIndex(indexId);
+    let dailyRows = [];
+    let enrichmentDailyAsOf = null;
+    let enrichmentDailyUpdatedAt = null;
+    let enrichmentMixed = false;
+    try {
+      let dQuery = supabase.from(dailyTable).select('*').eq('as_of', asOf);
+      if (qCutoff) dQuery = dQuery.lte('updated_at', qCutoff);
+      const resp = await dQuery;
+      if (!resp.error && Array.isArray(resp.data) && resp.data.length > 0) {
+        dailyRows = resp.data;
+        enrichmentDailyAsOf = asOf;
+        enrichmentDailyUpdatedAt = dailyRows.reduce((mx, r) => {
+          const t = r && r.updated_at ? new Date(r.updated_at).getTime() : 0; return t > mx ? t : mx;
+        }, 0);
+      } else {
+        // Fallback: latest Daily snapshot regardless of as_of (mark as mixed)
+        const { data: dDates } = await supabase
+          .from(dailyTable)
+          .select('as_of')
+          .order('as_of', { ascending: false })
+          .limit(1);
+        const dAsOf = dDates && dDates[0] ? dDates[0].as_of : null;
+        if (dAsOf) {
+          const { data: dRowsRaw } = await supabase.from(dailyTable).select('*').eq('as_of', dAsOf);
+          dailyRows = Array.isArray(dRowsRaw) ? dRowsRaw : [];
+          enrichmentDailyAsOf = dAsOf;
+          enrichmentMixed = (asOf && dAsOf && dAsOf !== asOf);
+          enrichmentDailyUpdatedAt = dailyRows.reduce((mx, r) => {
+            const t = r && r.updated_at ? new Date(r.updated_at).getTime() : 0; return t > mx ? t : mx;
+          }, 0);
+        }
+      }
+    } catch { }
+
+    // Build basic lookups from the chosen Daily slice
     const priceByTicker = new Map();
-    const advSharesByTicker = new Map();
+    const advByTicker = new Map(); // shares/day
     for (const dr of (dailyRows || [])) {
-      const tk = String(dr.ticker || '').toUpperCase();
-      if (!tk) continue;
+      const tk = String(dr.ticker || '').toUpperCase(); if (!tk) continue;
       const price = (dr.price != null) ? Number(dr.price) : (dr.FG_PRICE_NOW != null ? Number(dr.FG_PRICE_NOW) : (dr.FG_PRICE != null ? Number(dr.FG_PRICE) : null));
-      // ADV as shares/day if available
-      const advShares = (dr.avg_daily_volume != null) ? Number(dr.avg_daily_volume) : null;
+      const adv = (dr.avg_daily_volume != null) ? Number(dr.avg_daily_volume) : null;
       priceByTicker.set(tk, (price != null && !Number.isNaN(price) ? price : null));
-      advSharesByTicker.set(tk, (advShares != null && !Number.isNaN(advShares) ? advShares : null));
+      advByTicker.set(tk, (adv != null && !Number.isNaN(adv) ? adv : null));
     }
-    const raw = rawBasic.map(r => {
-      const tkUp = String(r.ticker || '').toUpperCase();
-      const price = priceByTicker.get(tkUp);
-      const advShares = advSharesByTicker.get(tkUp);
-      // Delta is proforma target minus current capped; only fallback to uncapped if capped missing
-      const deltaFrac = (typeof r.delta_pct === 'number') ? Number(r.delta_pct)
-        : ((typeof r.target_w === 'number' && typeof r.curr_capped === 'number') ? (Number(r.target_w) - Number(r.curr_capped))
-          : ((typeof r.target_w === 'number' && typeof r.curr_uncapped === 'number') ? (Number(r.target_w) - Number(r.curr_uncapped)) : null));
-      const deltaAmt = (aum && aum > 0 && deltaFrac != null) ? (aum * Number(deltaFrac)) : null;
-      // Convert shares to millions for UI consistency
-      const deltaVolM = (price != null && price > 0 && deltaAmt != null) ? ((deltaAmt / price) / 1e6) : null;
-      const advM = (advShares != null) ? (advShares / 1e6) : null;
-      const dtc = (advM != null && advM > 0 && deltaVolM != null) ? (Math.abs(deltaVolM) / advM) : null;
+
+    // Attach price/adv to quarterly rows; do NOT compute flows here (client has AUM)
+    const qEnriched = qNorm.map(r => {
+      const tk = String(r.ticker || '').toUpperCase();
       return Object.assign({}, r, {
-        price: (price != null ? price : null),
-        delta_amt: (deltaAmt != null ? deltaAmt : null),
-        delta_vol: (deltaVolM != null ? deltaVolM : null),
-        days_to_cover: (dtc != null ? dtc : null),
-        // expose distinct weights for UI/CSV
-        curr_weight_uncapped: (r.curr_uncapped != null ? Number(r.curr_uncapped) : null),
-        curr_weight_capped: (r.curr_capped != null ? Number(r.curr_capped) : null),
-        new_weight: (r.target_w != null ? Number(r.target_w) : null),
-        delta_pct: (deltaFrac != null ? Number(deltaFrac) : null),
+        price: (priceByTicker.get(tk) ?? null),
+        avg_daily_volume: (advByTicker.get(tk) ?? null)
       });
     });
-    const lastUpdated = raw.reduce((mx, r) => {
-      const t = r && r.updated_at ? new Date(r.updated_at).getTime() : 0;
-      return t > mx ? t : mx;
+
+    // lastUpdated across quarterly slice
+    const lastUpdated = qEnriched.reduce((mx, r) => {
+      const t = r && r.updated_at ? new Date(r.updated_at).getTime() : 0; return t > mx ? t : mx;
     }, 0);
+
+    // Group to issuer-level with children
     const groups = new Map();
-    for (const r of raw) {
+    for (const r of qEnriched) {
       const key = _issuerKeyFromRow(r);
       const g = groups.get(key) || { __key: key, rows: [] };
       g.rows.push(r);
@@ -1091,9 +1133,6 @@ app.get('/api/index/:indexId/quarterly_grouped', async (req, res) => {
       const first = ch[0] || {};
       const children = ch.map(r => ({ ...r, __class: _classFromRow(r) }));
       const multi = children.length > 1;
-      // If single-class issuer, surface child delta_vol/DTC to parent; else leave null
-      const parentDeltaVol = (!multi && children[0] && children[0].delta_vol != null) ? Number(children[0].delta_vol) : null;
-      const parentDtc = (!multi && children[0] && children[0].days_to_cover != null) ? Number(children[0].days_to_cover) : null;
       rows.push({
         ...first,
         name: _stripClassWords(first.name || first.issuer || first.ticker || ''),
@@ -1103,15 +1142,22 @@ app.get('/api/index/:indexId/quarterly_grouped', async (req, res) => {
         curr_weight_uncapped: (agg.curr_uncapped != null ? agg.curr_uncapped : null),
         new_weight: (agg.proposed != null ? agg.proposed : null),
         delta_pct,
-        delta_vol: parentDeltaVol,
-        days_to_cover: parentDtc,
         flags: Array.from(new Set(agg.flags.filter(Boolean))).join('; '),
         __multi: multi,
         __children: children,
       });
     }
     rows.sort((a, b) => Number(b.mcap_uncapped || 0) - Number(a.mcap_uncapped || 0));
-    return res.json({ asOf, lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null), rows });
+
+    return res.json({
+      asOf,
+      lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null),
+      rows,
+      enrichmentDailyAsOf,
+      enrichmentDailyUpdatedAt: (enrichmentDailyUpdatedAt ? new Date(enrichmentDailyUpdatedAt).toISOString() : null),
+      enrichmentMixed,
+      quarterlyCutoff: qCutoff || null
+    });
   } catch (e) {
     res.status(500).json({ error: e && e.message ? e.message : String(e) });
   }
@@ -1389,7 +1435,7 @@ app.get('/index', async (req, res) => {
                 const region = regionFor(idx);
                 // Always refresh both daily and quarterly on click
                 refreshBtn.disabled = true; refreshBtn.textContent = 'Refreshing…';
-                const r = await fetch('/api/kaxcap/run?region=' + encodeURIComponent(region) + '&indexId=' + encodeURIComponent(idx), { method: 'POST' });
+                const r = await fetch('/api/kaxcap/run?region=' + encodeURIComponent(region) + '&indexId=' + encodeURIComponent(idx) + '&quarterly=1', { method: 'POST' });
                 const json = await r.json();
                 if (r.status === 429) {
                   const msg = (json && json.error) ? String(json.error) : 'Quota exceeded';
@@ -1478,7 +1524,18 @@ app.get('/index', async (req, res) => {
                 const aum = (selectedMeta.aum != null ? selectedMeta.aum : (aumByRegion[region] || null));
                 const ccy = selectedMeta.ccy || currencyByRegion[region] || '';
                 const lastUpdQ = (json.lastUpdated ? new Date(json.lastUpdated).toLocaleString('da-DK') : 'unknown');
-                document.getElementById('quarterlyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Updated: ' + lastUpdQ + ' · Rows: ' + rows.length + ' · AUM (' + (ccy || 'CCY') + '): ' + (aum ? aum.toLocaleString('en-DK') : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/quarterly_grouped">JSON</a>';
+                const enrichNote = (json.enrichmentMixed && json.enrichmentDailyAsOf && json.asOf && json.enrichmentDailyAsOf !== json.asOf)
+                  ? (' · Enriched with Daily as_of: ' + json.enrichmentDailyAsOf)
+                  : '';
+                const dailyUpdNote = (json.enrichmentDailyUpdatedAt ? (' · Daily updated: ' + new Date(json.enrichmentDailyUpdatedAt).toLocaleString('da-DK')) : '');
+                document.getElementById('quarterlyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Updated: ' + lastUpdQ + ' · Rows: ' + rows.length + ' · AUM (' + (ccy || 'CCY') + '): ' + (aum ? aum.toLocaleString('en-DK') : 'n/a') + enrichNote + dailyUpdNote + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/quarterly_grouped">JSON</a>';
+                // If enrichmentMixed, show a small alert as well to avoid mistaken conclusions
+                if (json.enrichmentMixed) {
+                  const ab = document.getElementById('alertBar'); if (ab) {
+                    ab.textContent = 'Note: Quarterly enrichment used Daily snapshot ' + (json.enrichmentDailyAsOf || '') + ' which differs from Quarterly as_of ' + (json.asOf || '') + '.';
+                    ab.classList.remove('hidden');
+                  }
+                }
                 quarterlyRowsCache = rows.slice();
                 // Build lookups from daily cache
                 // - ticker -> display name
@@ -1952,7 +2009,7 @@ app.get('/index', async (req, res) => {
               if (nextRefreshSec === 0) {
                 try {
                   const idx = selected; const region = regionFor(idx);
-                  const r = await fetch('/api/kaxcap/run?region=' + encodeURIComponent(region) + '&indexId=' + encodeURIComponent(idx), { method: 'POST' });
+                  const r = await fetch('/api/kaxcap/run?region=' + encodeURIComponent(region) + '&indexId=' + encodeURIComponent(idx) + '&quarterly=1', { method: 'POST' });
                   const json = await r.json();
                   if (r.status === 429) {
                     const msg = (json && json.error) ? String(json.error) : 'Quota exceeded';
@@ -2723,7 +2780,7 @@ try {
       writeSchedulerLog(`eSundhed error: ${e && e.message ? e.message : String(e)}`);
     }
 
-    // Trigger FactSet worker for all markets (daily)
+    // Trigger FactSet worker for all markets (daily + quarterly)
     try {
       const pythonCmd = process.env.PYTHON || 'python3';
       const scriptPath = path.join(__dirname, 'workers', 'indexes', 'main.py');
@@ -2734,7 +2791,8 @@ try {
       ];
       for (const r of runs) {
         await new Promise((resolve) => {
-          execFile(pythonCmd, [scriptPath, '--region', r.region, '--index-id', r.indexId], { env: process.env }, (error, stdout, stderr) => {
+          // Use --quarterly so the single run refreshes both Daily and Quarterly tables
+          execFile(pythonCmd, [scriptPath, '--region', r.region, '--index-id', r.indexId, '--quarterly'], { env: process.env }, (error, stdout, stderr) => {
             if (error) {
               console.error('[scheduler] FactSet run error', r, error);
               writeSchedulerLog(`FactSet run error region=${r.region} index=${r.indexId}: ${error && error.message ? error.message : String(error)}`);
