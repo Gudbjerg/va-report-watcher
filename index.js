@@ -950,12 +950,59 @@ app.get('/api/index/:indexId/quarterly_grouped', async (req, res) => {
       .eq('as_of', asOf);
     if (err2) throw err2;
     const raw0 = Array.isArray(data) ? data : [];
-    const raw = raw0.map(r => ({
+    const rawBasic = raw0.map(r => ({
       ...r,
-      curr_capped: (typeof r.curr_weight_capped === 'number') ? r.curr_weight_capped : (typeof r.curr_weight_uncapped === 'number' ? r.curr_weight_uncapped : (typeof r.old_weight === 'number' ? r.old_weight : 0)),
-      new_w: (typeof r.weight === 'number') ? r.weight : (typeof r.new_weight === 'number' ? r.new_weight : 0),
+      // Keep weights distinct: uncapped vs capped vs proforma target
+      curr_uncapped: (typeof r.curr_weight_uncapped === 'number') ? r.curr_weight_uncapped : null,
+      curr_capped: (typeof r.curr_weight_capped === 'number') ? r.curr_weight_capped : (typeof r.old_weight === 'number' ? r.old_weight : null),
+      target_w: (typeof r.new_weight === 'number') ? r.new_weight : (typeof r.weight === 'number' ? r.weight : null),
       mcap_use: (typeof r.mcap_uncapped === 'number') ? r.mcap_uncapped : (typeof r.mcap === 'number' ? r.mcap : 0),
     }));
+    // Server-side enrichment: attach price/ADV from latest Daily and compute delta amount/volume/DTC
+    const meta = await getIndexMeta(indexId);
+    const aum = (meta && meta.aum != null) ? Number(meta.aum) : 0;
+    let dailyRows = [];
+    try {
+      dailyRows = await fetchLatestIndexRows(indexId);
+    } catch (e) {
+      dailyRows = [];
+    }
+    const priceByTicker = new Map();
+    const advSharesByTicker = new Map();
+    for (const dr of (dailyRows || [])) {
+      const tk = String(dr.ticker || '').toUpperCase();
+      if (!tk) continue;
+      const price = (dr.price != null) ? Number(dr.price) : (dr.FG_PRICE_NOW != null ? Number(dr.FG_PRICE_NOW) : (dr.FG_PRICE != null ? Number(dr.FG_PRICE) : null));
+      // ADV as shares/day if available
+      const advShares = (dr.avg_daily_volume != null) ? Number(dr.avg_daily_volume) : null;
+      priceByTicker.set(tk, (price != null && !Number.isNaN(price) ? price : null));
+      advSharesByTicker.set(tk, (advShares != null && !Number.isNaN(advShares) ? advShares : null));
+    }
+    const raw = rawBasic.map(r => {
+      const tkUp = String(r.ticker || '').toUpperCase();
+      const price = priceByTicker.get(tkUp);
+      const advShares = advSharesByTicker.get(tkUp);
+      // Delta is proforma target minus current capped; only fallback to uncapped if capped missing
+      const deltaFrac = (typeof r.delta_pct === 'number') ? Number(r.delta_pct)
+        : ((typeof r.target_w === 'number' && typeof r.curr_capped === 'number') ? (Number(r.target_w) - Number(r.curr_capped))
+          : ((typeof r.target_w === 'number' && typeof r.curr_uncapped === 'number') ? (Number(r.target_w) - Number(r.curr_uncapped)) : null));
+      const deltaAmt = (aum && aum > 0 && deltaFrac != null) ? (aum * Number(deltaFrac)) : null;
+      // Convert shares to millions for UI consistency
+      const deltaVolM = (price != null && price > 0 && deltaAmt != null) ? ((deltaAmt / price) / 1e6) : null;
+      const advM = (advShares != null) ? (advShares / 1e6) : null;
+      const dtc = (advM != null && advM > 0 && deltaVolM != null) ? (Math.abs(deltaVolM) / advM) : null;
+      return Object.assign({}, r, {
+        price: (price != null ? price : null),
+        delta_amt: (deltaAmt != null ? deltaAmt : null),
+        delta_vol: (deltaVolM != null ? deltaVolM : null),
+        days_to_cover: (dtc != null ? dtc : null),
+        // expose distinct weights for UI/CSV
+        curr_weight_uncapped: (r.curr_uncapped != null ? Number(r.curr_uncapped) : null),
+        curr_weight_capped: (r.curr_capped != null ? Number(r.curr_capped) : null),
+        new_weight: (r.target_w != null ? Number(r.target_w) : null),
+        delta_pct: (deltaFrac != null ? Number(deltaFrac) : null),
+      });
+    });
     const lastUpdated = raw.reduce((mx, r) => {
       const t = r && r.updated_at ? new Date(r.updated_at).getTime() : 0;
       return t > mx ? t : mx;
@@ -971,27 +1018,33 @@ app.get('/api/index/:indexId/quarterly_grouped', async (req, res) => {
     for (const g of groups.values()) {
       const ch = g.rows;
       const agg = ch.reduce((acc, r) => {
-        acc.curr += Number(r.curr_capped || 0);
-        acc.proposed += Number(r.new_w || 0);
+        acc.curr_capped += Number(r.curr_weight_capped || 0);
+        acc.curr_uncapped += Number(r.curr_weight_uncapped || 0);
+        acc.proposed += Number(r.new_weight || 0);
         acc.mcap += Number(r.mcap_use || 0);
         if (r.flags) acc.flags.push(String(r.flags));
         return acc;
-      }, { curr: 0, proposed: 0, mcap: 0, flags: [] });
-      const delta_pct = agg.proposed - agg.curr;
+      }, { curr_capped: 0, curr_uncapped: 0, proposed: 0, mcap: 0, flags: [] });
+      const delta_pct = (agg.proposed != null && agg.curr_capped != null) ? (agg.proposed - agg.curr_capped) : null;
       const first = ch[0] || {};
       const children = ch.map(r => ({ ...r, __class: _classFromRow(r) }));
+      const multi = children.length > 1;
+      // If single-class issuer, surface child delta_vol/DTC to parent; else leave null
+      const parentDeltaVol = (!multi && children[0] && children[0].delta_vol != null) ? Number(children[0].delta_vol) : null;
+      const parentDtc = (!multi && children[0] && children[0].days_to_cover != null) ? Number(children[0].days_to_cover) : null;
       rows.push({
         ...first,
         name: _stripClassWords(first.name || first.issuer || first.ticker || ''),
         issuer: _stripClassWords(first.issuer || first.name || ''),
         mcap_uncapped: agg.mcap,
-        old_weight: agg.curr,
-        new_weight: agg.proposed,
+        old_weight: (agg.curr_capped != null ? agg.curr_capped : null),
+        curr_weight_uncapped: (agg.curr_uncapped != null ? agg.curr_uncapped : null),
+        new_weight: (agg.proposed != null ? agg.proposed : null),
         delta_pct,
-        delta_vol: null,
-        days_to_cover: null,
+        delta_vol: parentDeltaVol,
+        days_to_cover: parentDtc,
         flags: Array.from(new Set(agg.flags.filter(Boolean))).join('; '),
-        __multi: children.length > 1,
+        __multi: multi,
         __children: children,
       });
     }
@@ -1266,7 +1319,9 @@ app.get('/index', async (req, res) => {
             async function loadAll() {
               document.getElementById('meta').textContent = 'Loading ' + selected + '…';
               await loadMeta();
-              await Promise.all([loadQuarterly(), loadDaily()]);
+              // Load Daily first so quarterly can reuse price/ADV/mcap lookups
+              await loadDaily();
+              await loadQuarterly();
               document.getElementById('meta').textContent = 'Loaded ' + selected;
               nextRefreshSec = 1200;
             }
@@ -1375,7 +1430,8 @@ app.get('/index', async (req, res) => {
                   const deltaClass = (deltaPct!=null && deltaPct>0) ? 'text-green-700' : (deltaPct!=null && deltaPct<0 ? 'text-red-700' : '');
                   const rowId = 'q-' + sanitizeId(issuer);
                   const toggle = (r.__multi ? '<button class="mr-2 text-xs px-1 py-0.5 border rounded" data-toggle="'+rowId+'">▶</button>' : '');
-                  let html = '<tr class="border-b"'
+                  // Correct the <tr> opening tag (was missing '>')
+                  let html = '<tr class="border-b">'
                     + '<td class="px-3 py-2 text-sm sticky left-0 bg-white">' + toggle + issuer + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (mcapBn != null && mcapBn>0 ? mcapBn.toFixed(2) : '') + '</td>'
                     + '<td class="px-3 py-2 text-sm text-right">' + (price != null ? price.toFixed(2) : '') + '</td>'
@@ -1403,6 +1459,7 @@ app.get('/index', async (req, res) => {
                       const cCurrPct = (cCurr!=null ? (cCurr*100).toFixed(2)+'%' : '');
                       const cNewPct = (cNew!=null ? (cNew*100).toFixed(2)+'%' : '');
                       const cDeltaPct = (cDelta!=null ? (cDelta*100).toFixed(2)+'%' : '');
+                      // Correct the <tr> opening tag for child rows (was missing '>')
                       return '<tr class="border-b hidden child-of-'+rowId+'">'
                         + '<td class="px-3 py-2 text-xs pl-7">' + cName + cClass + '</td>'
                         + '<td class="px-3 py-2 text-xs text-right">' + (cMcapBn!=null ? cMcapBn.toFixed(2) : '') + '</td>'
