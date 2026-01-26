@@ -1408,11 +1408,15 @@ app.get('/index', async (req, res) => {
                   const mappedName = nameByTicker.get(tkUp);
                   const issuer = mappedName || (r.name || r.issuer || r.ticker || '');
                   const cKey = companyKeyFrom(r);
-                  const mcapBn = (
-                    r.mcap_bn != null && Number(r.mcap_bn) > 0 ? Number(r.mcap_bn) : (
-                    r.mcap != null && Number(r.mcap) > 0 ? (Number(r.mcap) / 1e9) : (
-                      r.mcap_uncapped != null && Number(r.mcap_uncapped) > 0 ? (Number(r.mcap_uncapped) / 1e9) : (mcapBnByCompanyKey.get(cKey) ?? null)))
-                  );
+                  // Derive Market Cap (bn) robustly from quarterly payload; fallback to Daily map
+                  const mcapBn = (() => {
+                    const raw = (r.mcap_uncapped != null && Number(r.mcap_uncapped) > 0)
+                      ? Number(r.mcap_uncapped)
+                      : (r.mcap != null && Number(r.mcap) > 0 ? Number(r.mcap) : null);
+                    if (raw != null) return raw / 1e9;
+                    const fromMap = mcapBnByCompanyKey.get(cKey);
+                    return fromMap != null ? Number(fromMap) : null;
+                  })();
                   const price = (!r.__multi ? (priceByTicker.get(tkUp) ?? (r.price!=null? Number(r.price): null)) : null);
                   const currW = (typeof r.old_weight==='number') ? Number(r.old_weight) : null; // decimal fraction
                   const newW = (typeof r.new_weight==='number') ? Number(r.new_weight) : null; // decimal fraction
@@ -1447,7 +1451,12 @@ app.get('/index', async (req, res) => {
                       const cTk = (ch.ticker || '').toString().toUpperCase();
                       const cName = (nameByTicker.get(cTk) || ch.name || ch.issuer || ch.ticker || '');
                       const cClass = ch.__class ? (' (' + ch.__class + ')') : '';
-                      const cMcapBn = (ch.mcap != null ? Number(ch.mcap)/1e9 : (ch.mcap_uncapped != null ? Number(ch.mcap_uncapped)/1e9 : null));
+                      const cMcapBn = (() => {
+                        const raw = (ch.mcap_uncapped != null && Number(ch.mcap_uncapped) > 0)
+                          ? Number(ch.mcap_uncapped)
+                          : (ch.mcap != null && Number(ch.mcap) > 0 ? Number(ch.mcap) : null);
+                        return raw != null ? (raw / 1e9) : null;
+                      })();
                       const cPrice = (priceByTicker.get(cTk) ?? (ch.price != null ? Number(ch.price) : null));
                       const cCurr = (typeof ch.curr_weight_capped==='number' ? Number(ch.curr_weight_capped) : (typeof ch.curr_weight_uncapped==='number' ? Number(ch.curr_weight_uncapped) : (typeof ch.old_weight==='number' ? Number(ch.old_weight) : null)));
                       const cNew = (typeof ch.weight==='number' ? Number(ch.weight) : (typeof ch.new_weight==='number' ? Number(ch.new_weight) : null));
@@ -1566,7 +1575,7 @@ app.get('/index', async (req, res) => {
                 const topN = sorted.slice(0, dailyLimit);
                 const trs = topN.map(r => {
                   const hasCapDiff = (typeof r.capped_weight === 'number' && typeof r.weight === 'number' && Math.abs(r.capped_weight - r.weight) > 1e-9);
-                  const flags = (r.flags && String(r.flags).trim()) || (hasCapDiff ? 'capped' : '');
+                  const flags = (r.flags && String(r.flags).trim()) || '';
                   const rowClass = flags.includes('40% breach') ? 'bg-red-50' : (flags.includes('10% breach') ? 'bg-yellow-50' : '');
                   const mcapRaw = (r.market_cap != null ? Number(r.market_cap) : (r.mcap != null ? Number(r.mcap) : null));
                   const mcapBn = (mcapRaw != null) ? (mcapRaw / 1e9) : null;
