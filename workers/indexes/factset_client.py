@@ -1,6 +1,8 @@
 # workers/indexes/factset_client.py
 import os
 from pathlib import Path
+from datetime import datetime
+import json
 from typing import Dict, Any
 
 import pandas as pd
@@ -79,6 +81,26 @@ def _get_rate_header(headers: Dict[str, str], key: str) -> str | None:
     return None
 
 
+def _write_rate_snapshot(headers: Dict[str, str]) -> None:
+    try:
+        limit = _get_rate_header(headers, 'X-FactSet-Api-RateLimit-Limit')
+        remaining = _get_rate_header(
+            headers, 'X-FactSet-Api-RateLimit-Remaining')
+        reset = _get_rate_header(headers, 'X-FactSet-Api-RateLimit-Reset')
+        payload = {
+            'ts': datetime.utcnow().isoformat() + 'Z',
+            'limit': limit,
+            'remaining': remaining,
+            'reset': reset
+        }
+        path = PROJECT_ROOT / 'logs' / 'api_rate.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+
+
 def _request_with_backoff(method: str, url: str, max_retries: int = 4, **kwargs):
     """HTTP helper that retries on 429 using Retry-After or FactSet rate headers."""
     import time
@@ -96,6 +118,7 @@ def _request_with_backoff(method: str, url: str, max_retries: int = 4, **kwargs)
             if limit or remaining:
                 print(
                     f"[rate] limit={limit} remaining={remaining} reset={reset}")
+                _write_rate_snapshot(r.headers)
         except Exception:
             pass
         if r.status_code != 429 or attempt >= max_retries:

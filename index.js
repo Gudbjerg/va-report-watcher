@@ -23,6 +23,122 @@ app.use('/assets', express.static(path.join(__dirname, 'assets')));
 // Simple in-memory run guard to prevent concurrent duplicate runs
 const activeRuns = new Map(); // key: indexId, value: boolean
 const lastRunTimes = new Map(); // key: indexId, value: timestamp ms
+// Simple daily usage tracker (tokens/runs) with configurable limit
+const FACTSET_DAILY_LIMIT = Number(process.env.FACTSET_DAILY_LIMIT || 40);
+let usageState = { date: new Date().toISOString().slice(0, 10), total: 0, byIndex: new Map() };
+function _resetUsageIfNewDay() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (usageState.date !== today) { usageState = { date: today, total: 0, byIndex: new Map() }; }
+}
+function _incUsage(indexId) {
+  _resetUsageIfNewDay();
+  const id = String(indexId || '').toUpperCase() || 'KAXCAP';
+  const prev = usageState.byIndex.get(id) || 0;
+  usageState.byIndex.set(id, prev + 1);
+  usageState.total += 1;
+}
+function _getUsage() {
+  _resetUsageIfNewDay();
+  const byIdx = {}; for (const [k, v] of usageState.byIndex.entries()) byIdx[k] = v;
+  const remaining = Math.max(0, FACTSET_DAILY_LIMIT - usageState.total);
+  return { date: usageState.date, limit: FACTSET_DAILY_LIMIT, usedTotal: usageState.total, remaining, byIndex: byIdx };
+}
+app.get('/api/usage', (req, res) => { try { return res.json(_getUsage()); } catch (e) { return res.status(500).json({ error: String(e && e.message || e) }); } });
+// Month-to-date usage log (migrated to Supabase with file fallback)
+const USAGE_LOG_FILE = path.join(__dirname, 'logs', 'api_usage.log');
+function _logUsageRunFile(indexId) {
+  try {
+    const dir = path.dirname(USAGE_LOG_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const entry = JSON.stringify({ ts: new Date().toISOString(), indexId: String(indexId || '').toUpperCase() }) + "\n";
+    fs.appendFileSync(USAGE_LOG_FILE, entry, 'utf8');
+  } catch (e) { /* ignore */ }
+}
+async function _logUsageRunSupabase(indexId) {
+  try {
+    if (!supabase || typeof supabase.from !== 'function') return;
+    const row = { index_id: String(indexId || '').toUpperCase(), created_at: new Date().toISOString() };
+    // Ignore errors — this is best-effort logging
+    await supabase.from('api_usage_log').insert([row]);
+  } catch (e) { /* ignore */ }
+}
+function _getMonthUsageFile() {
+  try {
+    const limit = Number(process.env.FACTSET_MONTHLY_LIMIT || 1000);
+    const monthKey = new Date().toISOString().slice(0, 7); // YYYY-MM
+    if (!fs.existsSync(USAGE_LOG_FILE)) return { month: monthKey, limit, used: 0, remaining: limit };
+    const txt = fs.readFileSync(USAGE_LOG_FILE, 'utf8');
+    const lines = txt.split(/\r?\n/).filter(Boolean);
+    let used = 0;
+    for (const line of lines) {
+      try { const j = JSON.parse(line); if (j && typeof j.ts === 'string' && j.ts.slice(0, 7) === monthKey) used += 1; } catch { }
+    }
+    const remaining = Math.max(0, limit - used);
+    return { month: monthKey, limit, used, remaining };
+  } catch (e) {
+    return { month: new Date().toISOString().slice(0, 7), limit: Number(process.env.FACTSET_MONTHLY_LIMIT || 1000), used: null, remaining: null, error: String(e && e.message || e) };
+  }
+}
+async function _getMonthUsageSupabase() {
+  const limit = Number(process.env.FACTSET_MONTHLY_LIMIT || 1000);
+  const now = new Date();
+  const monthKey = now.toISOString().slice(0, 7);
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
+  const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
+  try {
+    if (!supabase || typeof supabase.from !== 'function') throw new Error('supabase not configured');
+    // Count rows in current month window
+    const { count, error } = await supabase
+      .from('api_usage_log')
+      .select('id', { count: 'exact', head: true })
+      .gte('created_at', monthStart.toISOString())
+      .lt('created_at', nextMonthStart.toISOString());
+    if (error) throw error;
+    const used = Number(count || 0);
+    const remaining = Math.max(0, limit - used);
+    return { month: monthKey, limit, used, remaining, source: 'supabase' };
+  } catch (e) {
+    const f = _getMonthUsageFile();
+    return { ...f, source: 'file', error: (f.error || (e && e.message ? e.message : String(e))) };
+  }
+}
+app.get('/api/usage/month', async (req, res) => { try { return res.json(await _getMonthUsageSupabase()); } catch (e) { return res.status(500).json({ error: String(e && e.message || e) }); } });
+
+// Best-effort backfill: copy current-month entries from file log to Supabase
+async function _backfillMonthUsageToSupabase() {
+  try {
+    if (!supabase || typeof supabase.from !== 'function') return;
+    if (!fs.existsSync(USAGE_LOG_FILE)) return;
+    const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
+    const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
+    const { count } = await supabase
+      .from('api_usage_log')
+      .select('id', { count: 'exact', head: true })
+      .gte('created_at', monthStart.toISOString())
+      .lt('created_at', nextMonthStart.toISOString());
+    if (Number(count || 0) > 0) return; // already populated for this month
+    const txt = fs.readFileSync(USAGE_LOG_FILE, 'utf8');
+    const lines = txt.split(/\r?\n/).filter(Boolean).slice(-5000); // safety cap
+    const rows = [];
+    for (const line of lines) {
+      try {
+        const j = JSON.parse(line);
+        if (!j || !j.ts) continue;
+        const ts = new Date(j.ts);
+        if (ts >= monthStart && ts < nextMonthStart) {
+          rows.push({ index_id: String(j.indexId || '').toUpperCase(), created_at: new Date(j.ts).toISOString() });
+        }
+      } catch { }
+    }
+    if (rows.length > 0) {
+      await supabase.from('api_usage_log').insert(rows);
+      console.log('[usage] backfilled', rows.length, 'rows to Supabase for current month');
+    }
+  } catch (e) {
+    console.warn('[usage] backfill skipped:', e && e.message ? e.message : e);
+  }
+}
 
 // Scheduler log helper: ensure logs directory and append entries
 function writeSchedulerLog(line) {
@@ -264,6 +380,20 @@ function renderHead(title) {
               document.head.appendChild(link);
             }
           })();
+          // Mobile menu toggle (applies across pages using shared header)
+          document.addEventListener('DOMContentLoaded', function(){
+            try {
+              var btn = document.getElementById('mobileMenuBtn');
+              var menu = document.getElementById('mobileMenu');
+              if (btn && menu) {
+                btn.addEventListener('click', function(){
+                  var hidden = menu.classList.contains('hidden');
+                  menu.classList.toggle('hidden', !hidden);
+                  btn.setAttribute('aria-expanded', hidden ? 'true' : 'false');
+                });
+              }
+            } catch(e) {}
+          });
         </script>
       `;
 }
@@ -276,7 +406,7 @@ function renderHeader() {
                 <img src="/assets/MarketBuddyLogo.png" alt="MarketBuddy" class="h-12 md:h-16 lg:h-20 w-auto object-contain">
       </a>
             <nav class="hidden md:flex gap-8 items-center text-sm text-slate-600">
-              <a href="/index" class="hover:text-slate-900">Indexes</a>
+              <a href="/indexes" class="hover:text-slate-900">Indexes</a>
               <a href="/watchers" class="hover:text-slate-900">Watchers</a>
               <a href="/product/ai-analyst" class="hover:text-slate-900">AI Analyst</a>
                       <a href="/about" class="hover:text-slate-900">About</a>
@@ -286,7 +416,16 @@ function renderHeader() {
                       </a>
               <a href="/contact" class="px-3 py-2 rounded bg-yellow-400 text-slate-900 font-semibold">Login/Sign Up</a>
             </nav>
-            <button id="mobileMenuBtn" class="md:hidden text-slate-600">☰</button>
+            <button id="mobileMenuBtn" class="md:hidden text-slate-600" aria-expanded="false" aria-controls="mobileMenu" aria-label="Open menu">☰</button>
+          </div>
+          <div id="mobileMenu" class="md:hidden hidden border-t">
+            <div class="max-w-6xl mx-auto px-6 py-3 grid gap-2 text-sm">
+              <a href="/indexes" class="py-2">Indexes</a>
+              <a href="/watchers" class="py-2">Watchers</a>
+              <a href="/product/ai-analyst" class="py-2">AI Analyst</a>
+              <a href="/about" class="py-2">About</a>
+              <a href="/contact" class="py-2">Login/Sign Up</a>
+            </div>
           </div>
         </header>
       `;
@@ -417,6 +556,9 @@ app.get('/hel', async (req, res) => { const idxId = process.env.HEL_INDEX_ID || 
 
 app.get('/sto', async (req, res) => { const idxId = process.env.STO_INDEX_ID || 'OMXSALLS'; return res.redirect(302, '/index?idx=' + encodeURIComponent(idxId)); });
 
+// Alias route for Indexes overview
+app.get('/indexes', async (req, res) => { return res.redirect(302, '/index'); });
+
 // Per-index Quarterly pages mirroring Excel-style proforma
 function renderQuarterlyRows(rows, region) {
   const aumByRegion = { CPH: 110000000000, HEL: 22000000000, STO: 450000000000 };
@@ -519,60 +661,17 @@ async function renderDashboard(project = 'Universal') {
   // Render a single coherent HTML template. Client-side JS (below) will fetch and render memes dynamically
   return `<!doctype html>
   <html lang="en">
-    <head>${renderHead('MarketBuddy — ' + project)}
-      <style>/* small helper to make posted meme images scale */
-        .meme-img{width:100%;height:auto;object-fit:cover;border-radius:8px}
-        .meme-img{max-height:400px;}
-        .meme-collapsed .meme-area, .meme-collapsed #memeFormWrapper { display: none; }
-        .recent-thumb{width:56px;height:56px;object-fit:cover;border-radius:6px;border:1px solid rgba(255,255,255,0.08)}
-      </style>
-    </head>
+    <head>${renderHead('MarketBuddy — ' + project)}</head>
     <body class="bg-gray-50 text-gray-800 font-sans">
       ${renderHeader()}
 
   
-        <div class="max-w-6xl mx-auto px-6 py-16 grid grid-cols-1 md:grid-cols-3 gap-8 items-center">
-          <div class="md:col-span-2">
+        <div class="max-w-6xl mx-auto px-6 py-16">
+          <div>
             <div class="mb-4 text-sm text-yellow-600 uppercase tracking-wide">Powered by ABG Sundal Collier</div>
-            <h1 class="text-4xl md:text-5xl font-extrabold leading-tight mb-4 text-gray-900">Your Intelligent Edge in Equity Sales</h1>
-            <p class="text-gray-700 max-w-xl mb-6">Real-time scraping, index analytics, and an AI that converts rebalances and earnings deviations into concise, actionable sales commentary for ABG traders and sales teams.</p>
+            <h1 class="text-4xl md:text-5xl font-extrabold leading-tight mb-4 text-gray-900">Internal Index Analytics & Watchers</h1>
+            <p class="text-gray-700 max-w-2xl mb-6">MarketBuddy is an internal ABG tool for equity index analytics and operational monitoring. It provides issuer-level grouping across share classes, quarterly proforma calculations with cap enforcement, and daily status tracking with deltas, flows, and days-to-cover. Designed for reliability and clarity for ABG sales and trading.</p>
             <div class="text-sm text-gray-600">Use the top navigation to open product pages.</div>
-          </div>
-
-          <div class="md:block">
-            <div id="memeCard" class="bg-white/5 rounded-lg p-4 shadow-lg">
-              <div id="memeArea" class="meme-area">
-                <img id="topMeme" src="/assets/tscMeme.jpg" alt="hero" class="meme-img mb-3" loading="lazy">
-                <div class="text-sm text-gray-800 font-medium">Meme of the Moment</div>
-                <div id="memeMeta" class="mt-2 bg-white p-3 rounded border flex items-start gap-3">
-                  <div class="text-sm text-gray-700">
-                    <div id="memeTitle" class="font-semibold text-gray-900">Internal meme</div>
-                    <div id="memeCaption" class="text-gray-600 text-xs mt-1">For internal ABG use — post brief comments or images for the team</div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="mt-3 flex items-center justify-between">
-                <div class="text-xs text-gray-600">Tip: collapse to hide the image (session only)</div>
-                <div class="flex items-center gap-3">
-                  <button id="toggleMemeBtn" class="text-xs text-blue-700 underline">Collapse</button>
-                </div>
-              </div>
-
-              <div id="recentMemes" class="mt-3 flex gap-2"></div>
-
-              <div id="memeFormWrapper" class="mt-3 hidden">
-                <form id="memeForm" class="space-y-2">
-                  <input name="title" placeholder="Title" class="w-full px-3 py-2 rounded border bg-white text-gray-800 text-sm" />
-                  <input name="image" placeholder="Image URL" class="w-full px-3 py-2 rounded border bg-white text-gray-800 text-sm" />
-                  <textarea name="caption" placeholder="Short caption" class="w-full px-3 py-2 rounded border bg-white text-gray-800 text-sm"></textarea>
-                  <div class="flex gap-2">
-                    <button type="submit" class="px-3 py-2 bg-yellow-400 text-slate-900 rounded">Post</button>
-                    <button type="button" id="cancelMeme" class="px-3 py-2 border rounded">Cancel</button>
-                  </div>
-                </form>
-              </div>
-            </div>
           </div>
         </div>
 
@@ -582,7 +681,7 @@ async function renderDashboard(project = 'Universal') {
           <p class="mb-4 text-gray-600">Internal tool for ABG sales and trading: real-time watchers, index rebalancer proposals, and an AI analyst that provides fast, plain-language comments on rebalances and earnings deviations for quick distribution to the sales desk.</p>
           <div class="mt-4 flex items-center gap-4">
             <a href="/watchers" class="inline-block text-blue-600">Open Watchers →</a>
-            <a href="/kaxcap" class="inline-block text-blue-600">KAXCAP Index →</a>
+            <a href="/indexes" class="inline-block text-blue-600">Indexes →</a>
             <a href="/product/rebalancer" class="inline-block text-blue-600">Index Rebalancer →</a>
           </div>
         </div>
@@ -602,91 +701,7 @@ async function renderDashboard(project = 'Universal') {
           }
         });
 
-        // Meme collapse state is session-scoped so it's dynamic per browser session
-        const toggleBtn = document.getElementById('toggleMemeBtn');
-        const memeCard = document.getElementById('memeCard');
-        const memeFormWrapper = document.getElementById('memeFormWrapper');
-
-        function isCollapsed() {
-          return sessionStorage.getItem('mb:meme:collapsed') === '1';
-        }
-        function setCollapsed(v) {
-          sessionStorage.setItem('mb:meme:collapsed', v ? '1' : '0');
-          if (v) memeCard.classList.add('meme-collapsed'); else memeCard.classList.remove('meme-collapsed');
-          toggleBtn.textContent = v ? 'Expand' : 'Collapse';
-        }
-
-        if (toggleBtn) toggleBtn.addEventListener('click', () => setCollapsed(!isCollapsed()));
-        // initialize collapsed state (apply class, don't remove the card entirely)
-        setCollapsed(isCollapsed());
-
-        // Fetch memes from the server (simple file-backed store) and render prominently
-        async function loadMemes() {
-          try {
-            const res = await fetch('/api/memes');
-            if (!res.ok) return;
-            const json = await res.json();
-            const memes = (json && json.memes) || [];
-            if (memes.length === 0) return;
-            const top = memes[0];
-            const topImg = document.getElementById('topMeme');
-            const titleEl = document.getElementById('memeTitle');
-            const captionEl = document.getElementById('memeCaption');
-            if (top.image) topImg.src = top.image;
-            if (top.title) titleEl.textContent = top.title;
-            if (top.caption) captionEl.textContent = top.caption;
-            // render up to 3 recent thumbnails
-            const recentEl = document.getElementById('recentMemes');
-            if (recentEl) {
-              recentEl.innerHTML = '';
-              memes.slice(0, 3).forEach(m => {
-                const img = document.createElement('img');
-                img.className = 'recent-thumb';
-                img.src = m.image || '/assets/tscMeme.jpg';
-                img.title = m.title || '';
-                img.addEventListener('click', () => {
-                  if (m.image) topImg.src = m.image;
-                  titleEl.textContent = m.title || '';
-                  captionEl.textContent = m.caption || '';
-                });
-                recentEl.appendChild(img);
-              });
-            }
-          } catch (e) {
-            console.warn('Failed to load memes', e);
-          }
-        }
-
-        loadMemes();
-
-        // Meme posting UI
-        const memeForm = document.getElementById('memeForm');
-        const cancelBtn = document.getElementById('cancelMeme');
-        if (memeForm) {
-          // show form when user clicks title area
-          document.getElementById('memeMeta').addEventListener('click', () => {
-            memeFormWrapper.classList.toggle('hidden');
-          });
-
-          memeForm.addEventListener('submit', async (ev) => {
-            ev.preventDefault();
-            const fd = new FormData(memeForm);
-            const payload = { title: fd.get('title') || '', image: fd.get('image') || '', caption: fd.get('caption') || '' };
-            try {
-              const r = await fetch('/api/memes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-              if (!r.ok) throw new Error('Failed to post');
-              memeForm.reset();
-              memeFormWrapper.classList.add('hidden');
-              await loadMemes();
-              alert('Meme posted for this session');
-            } catch (e) {
-              console.error('Post meme failed', e);
-              alert('Posting meme failed');
-            }
-          });
-
-          if (cancelBtn) cancelBtn.addEventListener('click', () => memeFormWrapper.classList.add('hidden'));
-        }
+        // (meme section removed)
       </script>
     ${renderFooter()}
     </body>
@@ -746,23 +761,33 @@ app.post('/api/kaxcap/run', (req, res) => {
     if (nowTs - lastTs < 60_000) {
       return res.status(429).json({ ok: false, error: 'Run throttled (try again in ' + Math.ceil((60_000 - (nowTs - lastTs)) / 1000) + 's)' });
     }
+    // Quota check (tokens/runs) — block when no remaining
+    const usage = _getUsage();
+    if (usage.remaining <= 0) {
+      return res.status(429).json({ ok: false, error: 'Quota exceeded — no tokens left today', usage });
+    }
     if (region) { args.push('--region', String(region).toUpperCase()); }
     if (indexId) { args.push('--index-id', String(indexId)); }
     if (asOf) { args.push('--as-of', String(asOf)); }
-    // Always run quarterly to refresh both daily + quarterly in one trigger
-    args.push('--quarterly');
+    // Only run quarterly when explicitly requested via query/body
+    if (String(quarterly).toLowerCase() === 'true' || String(quarterly) === '1') {
+      args.push('--quarterly');
+    }
     activeRuns.set(idxKey, true);
     lastRunTimes.set(idxKey, nowTs);
+    _incUsage(idxKey);
+    _logUsageRunFile(idxKey);
+    _logUsageRunSupabase(idxKey); // fire-and-forget
     execFile(pythonCmd, args, { env: process.env }, (error, stdout, stderr) => {
       activeRuns.delete(idxKey);
       if (error) {
         console.error('[kaxcap-run] error:', error);
         if (stderr) console.error('[kaxcap-run] stderr:', stderr);
-        return res.status(500).json({ ok: false, error: String(error), stderr });
+        return res.status(500).json({ ok: false, error: String(error), stderr, usage: _getUsage() });
       }
       if (stderr) console.warn('[kaxcap-run] stderr:', stderr);
       console.log('[kaxcap-run] stdout:', stdout);
-      return res.json({ ok: true, stdout, startedAt: new Date(nowTs).toISOString() });
+      return res.json({ ok: true, stdout, startedAt: new Date(nowTs).toISOString(), usage: _getUsage() });
     });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
@@ -1110,23 +1135,29 @@ app.get('/index', async (req, res) => {
                 <span class="ml-auto"></span>
                 <div class="flex items-center gap-3">
                   <span id="refreshTicker" class="text-xs text-slate-500" aria-live="polite">auto-refresh in 20:00</span>
+                  <span id="quotaLeft" class="text-xs text-slate-500" aria-live="polite"></span>
+                  <span id="factsetLeft" class="text-xs text-slate-500" aria-live="polite"></span>
+                  <span id="monthLeft" class="text-xs text-slate-500" aria-live="polite"></span>
+                  <button id="rateDetailsBtn" class="text-xs underline text-slate-600">Headers</button>
                   <label class="text-xs text-slate-600 flex items-center gap-1"><input id="pauseRefresh" type="checkbox" class="align-middle"> Pause</label>
-                  <label class="text-xs text-slate-600 flex items-center gap-1"><input id="runQuarterly" type="checkbox" class="align-middle"> Quarterly</label>
+                  
                   <button id="refreshBtn" class="px-3 py-2 bg-yellow-400 text-slate-900 rounded">Refresh Selected</button>
                 </div>
               </div>
               <div id="summaryBar" class="flex flex-wrap items-center gap-2 mb-3 text-sm" aria-label="Index summary"></div>
+              <div id="alertBar" class="hidden mb-3 p-3 rounded border border-red-200 bg-red-50 text-red-800 text-sm"></div>
               <div id="meta" class="text-sm text-slate-600 mb-2">Select an index to load data.</div>
+              <div id="rateDetailsPanel" class="hidden mb-3 p-3 rounded border border-slate-200 bg-slate-50 text-xs text-slate-700"></div>
 
               <section class="mb-6">
-                <h2 class="font-bold mb-1">Quarterly Proforma</h2>
+                <h2 class="text-lg md:text-xl font-bold mb-1">Quarterly Proforma</h2>
                 <p class="text-xs text-slate-500 mb-2">Uncapped ranking → assign exception caps and 4.5% cap; deltas vs current capped, with AUM-derived flow and DTC.</p>
                 <div id="quarterlyMeta" class="text-xs text-slate-500 mb-2"></div>
                 <div id="quarterlyTable"></div>
               </section>
 
               <section>
-                <h2 class="font-bold mb-1">Daily Status <span id="dailyBadge" class="ml-2 inline-block px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700" aria-label="Warnings count">0</span></h2>
+                <h2 class="text-lg md:text-xl font-bold mb-1">Daily Status <span id="dailyBadge" class="ml-2 inline-block px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700" aria-label="Warnings count">0</span></h2>
                 <p class="text-xs text-slate-500 mb-2">Current capped ranking and daily rule tracking. Flags 10% exception breaches and 40% aggregate (>5%) with cut candidate at 4.5%.</p>
                 <div id="dailyMeta" class="text-xs text-slate-500 mb-2"></div>
                 <div id="dailyWarnings" class="mb-2"></div>
@@ -1346,8 +1377,14 @@ app.get('/index', async (req, res) => {
                 refreshBtn.disabled = true; refreshBtn.textContent = 'Refreshing…';
                 const r = await fetch('/api/kaxcap/run?region=' + encodeURIComponent(region) + '&indexId=' + encodeURIComponent(idx), { method: 'POST' });
                 const json = await r.json();
-                if (json.ok) {
+                if (r.status === 429) {
+                  const msg = (json && json.error) ? String(json.error) : 'Quota exceeded';
+                  const ab = document.getElementById('alertBar'); if (ab) { ab.textContent = msg; ab.classList.remove('hidden'); }
+                  document.getElementById('meta').textContent = 'Refresh failed: ' + msg;
+                  await loadUsage();
+                } else if (json.ok) {
                   document.getElementById('meta').textContent = 'Refresh started for ' + selected + ' at ' + (json.startedAt ? new Date(json.startedAt).toLocaleString('da-DK') : 'now') + ' — loading…';
+                  const ab = document.getElementById('alertBar'); if (ab) ab.classList.add('hidden');
                 } else {
                   document.getElementById('meta').textContent = 'Refresh failed: ' + (json.error || 'unknown');
                 }
@@ -1364,8 +1401,53 @@ app.get('/index', async (req, res) => {
               // Load Daily first so quarterly can reuse price/ADV/mcap lookups
               await loadDaily();
               await loadQuarterly();
+              await loadUsage();
               document.getElementById('meta').textContent = 'Loaded ' + selected;
               nextRefreshSec = 1200;
+            }
+            async function loadUsage(){
+              try {
+                const r = await fetch('/api/usage'); const j = await r.json();
+                if (j && typeof j.remaining !== 'undefined') {
+                  const el = document.getElementById('quotaLeft'); if (el) el.textContent = 'quota left today: ' + j.remaining;
+                }
+              } catch(e) {}
+              try {
+                const r2 = await fetch('/api/rate'); const j2 = await r2.json();
+                const snap = j2 && j2.snapshot; if (snap) {
+                  const lim = (snap.limit!=null? Number(snap.limit): null);
+                  const rem = (snap.remaining!=null? Number(snap.remaining): null);
+                  const rst = snap.reset || '';
+                  const el2 = document.getElementById('factsetLeft'); if (el2) {
+                    el2.textContent = (rem!=null && lim!=null) ? ('FactSet remaining: ' + rem + '/' + lim) : 'FactSet remaining: n/a';
+                  }
+                  // Populate raw header details panel
+                  const panel = document.getElementById('rateDetailsPanel');
+                  if (panel) {
+                    const meta = [];
+                    if (j2 && j2.fileMtime) meta.push('file_mtime: ' + j2.fileMtime);
+                    if (snap.window) meta.push('window: ' + snap.window);
+                    if (snap.reset) meta.push('reset: ' + snap.reset);
+                    const headerText = JSON.stringify(snap, null, 2);
+                    panel.innerHTML = '<div class="mb-2 text-slate-600">' + (meta.join(' · ') || 'Rate headers snapshot') + '</div>' + '<pre class="whitespace-pre-wrap">' + headerText.replace(/[<&]/g, c=>({"<":"&lt;","&":"&amp;"}[c])) + '</pre>';
+                  }
+                  const btn = document.getElementById('rateDetailsBtn');
+                  if (btn) {
+                    btn.onclick = () => {
+                      const p = document.getElementById('rateDetailsPanel');
+                      if (!p) return;
+                      const hidden = p.classList.contains('hidden');
+                      p.classList.toggle('hidden', !hidden);
+                    };
+                  }
+                }
+              } catch(e) {}
+              try {
+                const r3 = await fetch('/api/usage/month'); const j3 = await r3.json();
+                if (j3 && typeof j3.remaining !== 'undefined') {
+                  const el3 = document.getElementById('monthLeft'); if (el3) el3.textContent = 'month left: ' + j3.remaining + ' / ' + j3.limit;
+                }
+              } catch(e) {}
             }
 
             async function loadMeta(){
@@ -1505,8 +1587,8 @@ app.get('/index', async (req, res) => {
                       const cDelta = (typeof ch.delta_pct==='number' ? Number(ch.delta_pct) : (cCurr!=null && cNew!=null ? (cNew - cCurr) : null));
                       const cDeltaAmt = (aum && cDelta != null ? aum * cDelta : null);
                       const cAdvM = advByTickerMillions.get(cTk);
-                      const cVol = (cDeltaAmt != null && cPrice != null ? (cDeltaAmt/Number(cPrice)) : null);
-                      const cDtc = (cVol != null && cAdvM != null && cAdvM > 0 ? (Math.abs(cVol)/cAdvM) : null);
+                      const cVol = (ch.delta_vol != null ? Number(ch.delta_vol) : ((cDeltaAmt != null && cPrice != null) ? (cDeltaAmt/Number(cPrice)/1e6) : null));
+                      const cDtc = (ch.days_to_cover != null ? Number(ch.days_to_cover) : ((cVol != null && cAdvM != null && cAdvM > 0) ? (Math.abs(cVol)/cAdvM) : null));
                       const cCurrPct = (cCurr!=null ? (cCurr*100).toFixed(2)+'%' : '');
                       const cNewPct = (cNew!=null ? (cNew*100).toFixed(2)+'%' : '');
                       const cDeltaPct = (cDelta!=null ? (cDelta*100).toFixed(2)+'%' : '');
@@ -1842,20 +1924,38 @@ app.get('/index', async (req, res) => {
                 const d = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', weekday: 'short' }).formatToParts(now);
                 const parts = Object.fromEntries(d.map(p=>[p.type,p.value]));
                 const hr = parseInt(parts.hour,10);
+                const mn = parseInt(parts.minute,10);
                 const wk = (parts.weekday||'').toLowerCase();
                 const isWk = !['sat','sun'].includes(wk.slice(0,3));
-                const openH = 9, closeH = 17; // basic window; adjust as needed
-                return isWk && hr>=openH && hr<closeH;
+                // Market windows per region (local time)
+                const windows = { CPH: { openH: 8, openM: 0, closeH: 17, closeM: 30 }, HEL: { openH: 8, openM: 0, closeH: 17, closeM: 30 }, STO: { openH: 8, openM: 0, closeH: 17, closeM: 30 } };
+                const w = windows[reg] || windows.CPH;
+                const afterOpen = (hr>w.openH) || (hr===w.openH && mn>=w.openM);
+                const beforeClose = (hr<w.closeH) || (hr===w.closeH && mn<w.closeM);
+                return isWk && afterOpen && beforeClose;
               } catch { return true; }
             }
-            setInterval(() => {
+            setInterval(async () => {
               if (!isMarketOpen(selected)) { refreshTicker.textContent = 'market closed — no auto-refresh'; return; }
               if (pauseCb && pauseCb.checked) { refreshTicker.textContent = 'auto-refresh paused'; return; }
               nextRefreshSec = Math.max(0, nextRefreshSec - 1);
               const m = String(Math.floor(nextRefreshSec/60)).padStart(2,'0');
               const s = String(nextRefreshSec%60).padStart(2,'0');
               refreshTicker.textContent = 'auto-refresh in ' + m + ':' + s;
-              if (nextRefreshSec === 0) { loadAll(); nextRefreshSec = 1200; }
+              if (nextRefreshSec === 0) {
+                try {
+                  const idx = selected; const region = regionFor(idx);
+                  const r = await fetch('/api/kaxcap/run?region=' + encodeURIComponent(region) + '&indexId=' + encodeURIComponent(idx), { method: 'POST' });
+                  const json = await r.json();
+                  if (r.status === 429) {
+                    const msg = (json && json.error) ? String(json.error) : 'Quota exceeded';
+                    const ab = document.getElementById('alertBar'); if (ab) { ab.textContent = msg; ab.classList.remove('hidden'); }
+                  } else if (json && json.ok) {
+                    const ab = document.getElementById('alertBar'); if (ab) ab.classList.add('hidden');
+                  }
+                } catch (e) { /* ignore auto error */ }
+                await loadAll(); nextRefreshSec = 1200;
+              }
             }, 1000);
 
             loadAll();
@@ -2381,6 +2481,21 @@ app.get('/api/debug/env', (req, res) => {
   });
 });
 
+// API: expose last captured FactSet rate-limit snapshot from Python worker
+app.get('/api/rate', async (req, res) => {
+  try {
+    const file = path.join(__dirname, 'logs', 'api_rate.json');
+    if (!fs.existsSync(file)) return res.json({ ok: true, snapshot: null });
+    const txt = fs.readFileSync(file, 'utf8');
+    const json = JSON.parse(txt || '{}');
+    let fileMtime = null;
+    try { const st = fs.statSync(file); fileMtime = st.mtime ? new Date(st.mtime).toISOString() : null; } catch { }
+    return res.json({ ok: true, snapshot: json, fileMtime });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
+  }
+});
+
 // Product page: Rebalancer dashboard
 app.get('/product/rebalancer', async (req, res) => { return res.redirect(302, '/index'); });
 
@@ -2503,6 +2618,8 @@ app.listen(PORT, () => {
   console.log(`🌐 Server running on port ${PORT}`);
   updateVA();
   updateEsundhed();
+  // One-time backfill so month counter reflects earlier runs
+  _backfillMonthUsageToSupabase();
   // Run FactSet worker batch once on startup to populate tables
   (async () => {
     try {
@@ -2526,6 +2643,7 @@ app.listen(PORT, () => {
             } else {
               console.log('[startup] FactSet run ok', r, stdout);
               writeSchedulerLog(`startup FactSet ok region=${r.region} index=${r.indexId}`);
+              _logUsageRunSupabase(r.indexId);
             }
             resolve();
           });
@@ -2549,6 +2667,7 @@ app.listen(PORT, () => {
                   } else {
                     console.log('[startup] Quarterly run ok', r, stdout);
                     writeSchedulerLog(`startup Quarterly ok region=${r.region} index=${r.indexId}`);
+                    _logUsageRunSupabase(r.indexId);
                   }
                   resolve();
                 });
@@ -2615,6 +2734,7 @@ try {
             } else {
               console.log('[scheduler] FactSet run ok', r, stdout);
               writeSchedulerLog(`FactSet run ok region=${r.region} index=${r.indexId}`);
+              _logUsageRunSupabase(r.indexId);
             }
             resolve();
           });
