@@ -20,6 +20,10 @@ const app = express();
 app.use(express.json());
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
+// Simple in-memory run guard to prevent concurrent duplicate runs
+const activeRuns = new Map(); // key: indexId, value: boolean
+const lastRunTimes = new Map(); // key: indexId, value: timestamp ms
+
 // Scheduler log helper: ensure logs directory and append entries
 function writeSchedulerLog(line) {
   try {
@@ -732,11 +736,25 @@ app.post('/api/kaxcap/run', (req, res) => {
     } catch { }
     const args = [scriptPath];
     const { region, indexId, asOf, quarterly } = Object.assign({}, req.query, req.body);
+    const idxKey = String(indexId || '').toUpperCase() || 'KAXCAP';
+    const nowTs = Date.now();
+    const lastTs = lastRunTimes.get(idxKey) || 0;
+    // Throttle repeated triggers (60s) and prevent concurrent runs
+    if (activeRuns.get(idxKey)) {
+      return res.status(429).json({ ok: false, error: 'Run already in progress for ' + idxKey });
+    }
+    if (nowTs - lastTs < 60_000) {
+      return res.status(429).json({ ok: false, error: 'Run throttled (try again in ' + Math.ceil((60_000 - (nowTs - lastTs)) / 1000) + 's)' });
+    }
     if (region) { args.push('--region', String(region).toUpperCase()); }
     if (indexId) { args.push('--index-id', String(indexId)); }
     if (asOf) { args.push('--as-of', String(asOf)); }
-    if (String(quarterly).toLowerCase() === 'true') { args.push('--quarterly'); }
+    // Always run quarterly to refresh both daily + quarterly in one trigger
+    args.push('--quarterly');
+    activeRuns.set(idxKey, true);
+    lastRunTimes.set(idxKey, nowTs);
     execFile(pythonCmd, args, { env: process.env }, (error, stdout, stderr) => {
+      activeRuns.delete(idxKey);
       if (error) {
         console.error('[kaxcap-run] error:', error);
         if (stderr) console.error('[kaxcap-run] stderr:', stderr);
@@ -744,7 +762,7 @@ app.post('/api/kaxcap/run', (req, res) => {
       }
       if (stderr) console.warn('[kaxcap-run] stderr:', stderr);
       console.log('[kaxcap-run] stdout:', stdout);
-      return res.json({ ok: true, stdout });
+      return res.json({ ok: true, stdout, startedAt: new Date(nowTs).toISOString() });
     });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
@@ -1324,14 +1342,19 @@ app.get('/index', async (req, res) => {
               try {
                 const idx = selected;
                 const region = regionFor(idx);
-                const q = document.getElementById('runQuarterly');
-                const quarterlyParam = (q && q.checked) ? '&quarterly=true' : '';
-                const r = await fetch('/api/kaxcap/run?region=' + encodeURIComponent(region) + '&indexId=' + encodeURIComponent(idx) + quarterlyParam, { method: 'POST' });
+                // Always refresh both daily and quarterly on click
+                refreshBtn.disabled = true; refreshBtn.textContent = 'Refreshing…';
+                const r = await fetch('/api/kaxcap/run?region=' + encodeURIComponent(region) + '&indexId=' + encodeURIComponent(idx), { method: 'POST' });
                 const json = await r.json();
-                document.getElementById('meta').textContent = 'Refresh triggered for ' + selected + (json.ok ? ' — OK' : (' — Error: ' + (json.error || 'unknown')));
-                setTimeout(loadAll, 1200);
+                if (json.ok) {
+                  document.getElementById('meta').textContent = 'Refresh started for ' + selected + ' at ' + (json.startedAt ? new Date(json.startedAt).toLocaleString('da-DK') : 'now') + ' — loading…';
+                } else {
+                  document.getElementById('meta').textContent = 'Refresh failed: ' + (json.error || 'unknown');
+                }
+                setTimeout(async ()=>{ await loadAll(); refreshBtn.disabled=false; refreshBtn.textContent='Refresh Selected'; }, 1500);
               } catch (e) {
                 document.getElementById('meta').textContent = 'Refresh failed: ' + (e && e.message ? e.message : e);
+                refreshBtn.disabled=false; refreshBtn.textContent='Refresh Selected';
               }
             });
 
@@ -1810,14 +1833,29 @@ app.get('/index', async (req, res) => {
               }
             }
 
-            // Auto-refresh countdown and control
+            // Only auto-refresh when market open for selected index
+            function isMarketOpen(idx){
+              const reg = regionFor(idx);
+              const tz = reg==='HEL' ? 'Europe/Helsinki' : (reg==='STO' ? 'Europe/Stockholm' : 'Europe/Copenhagen');
+              try {
+                const now = new Date();
+                const d = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', weekday: 'short' }).formatToParts(now);
+                const parts = Object.fromEntries(d.map(p=>[p.type,p.value]));
+                const hr = parseInt(parts.hour,10);
+                const wk = (parts.weekday||'').toLowerCase();
+                const isWk = !['sat','sun'].includes(wk.slice(0,3));
+                const openH = 9, closeH = 17; // basic window; adjust as needed
+                return isWk && hr>=openH && hr<closeH;
+              } catch { return true; }
+            }
             setInterval(() => {
+              if (!isMarketOpen(selected)) { refreshTicker.textContent = 'market closed — no auto-refresh'; return; }
               if (pauseCb && pauseCb.checked) { refreshTicker.textContent = 'auto-refresh paused'; return; }
               nextRefreshSec = Math.max(0, nextRefreshSec - 1);
               const m = String(Math.floor(nextRefreshSec/60)).padStart(2,'0');
               const s = String(nextRefreshSec%60).padStart(2,'0');
               refreshTicker.textContent = 'auto-refresh in ' + m + ':' + s;
-              if (nextRefreshSec === 0) { loadAll(); }
+              if (nextRefreshSec === 0) { loadAll(); nextRefreshSec = 1200; }
             }, 1000);
 
             loadAll();
