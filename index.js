@@ -694,7 +694,7 @@ async function renderDashboard(project = 'Universal') {
           <div class="mt-4 flex items-center gap-4">
             <a href="/watchers" class="inline-block text-blue-600">Open Watchers →</a>
             <a href="/indexes" class="inline-block text-blue-600">Indexes →</a>
-            <a href="/product/rebalancer" class="inline-block text-blue-600">Index Rebalancer →</a>
+            <a href="/product/ai-analyst" class="inline-block text-blue-600">AI Analyst →</a>
           </div>
         </div>
       </main>
@@ -1751,8 +1751,23 @@ app.get('/index', async (req, res) => {
                 const json = await r.json();
                 const rows = json.rows || [];
                 const totalW = rows.reduce((s, rr) => s + (Number(rr.weight) || 0), 0);
+                // Aggregate of current capped weights over 5% to monitor 40% rule proximity
+                const sumOver5 = rows.reduce((acc, rr) => {
+                  const currCap = (typeof rr.curr_weight_capped === 'number') ? Number(rr.curr_weight_capped)
+                    : ((typeof rr.capped_weight === 'number' && typeof rr.delta_pct === 'number') ? (Number(rr.capped_weight) - Number(rr.delta_pct))
+                      : (typeof rr.capped_weight === 'number' ? Number(rr.capped_weight)
+                        : (typeof rr.weight === 'number' ? Number(rr.weight) : null)));
+                  return (currCap != null && currCap > 0.05) ? (acc + currCap) : acc;
+                }, 0);
+                const headroom = (0.40 - (sumOver5 || 0));
                 const lastUpdD = (json.lastUpdated ? new Date(json.lastUpdated).toLocaleString('da-DK') : 'unknown');
-                document.getElementById('dailyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Updated: ' + lastUpdD + ' · Rows: ' + rows.length + ' · Sum(weight): ' + (totalW ? totalW.toFixed(6) : 'n/a') + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/constituents_grouped">JSON</a>';
+                document.getElementById('dailyMeta').textContent = 'As of: ' + (json.asOf || 'unknown')
+                  + ' · Updated: ' + lastUpdD
+                  + ' · Rows: ' + rows.length
+                  + ' · Sum(weight): ' + (totalW ? totalW.toFixed(6) : 'n/a')
+                  + ' · >5% sum: ' + ((sumOver5 || 0) * 100).toFixed(2) + '%'
+                  + ' · Headroom to 40%: ' + (headroom * 100).toFixed(2) + '%'
+                  + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/constituents_grouped">JSON</a>';
                 const top = rows.slice(0, 25);
                 const region = regionFor(selected);
                 const aum = (selectedMeta.aum != null ? selectedMeta.aum : (aumByRegion[region] || null));
@@ -2301,8 +2316,8 @@ app.get('/about', async (req, res) => {
             </div>
             <p class="text-sm text-gray-600 mb-4">Maintained by Tobias Gudbjerg. For access or questions, reach out to Tobias internally or via the LinkedIn profile linked below.</p>
             <div class="mt-4">
-              <a href="${linkedin}" target="_blank" rel="noopener" class="inline-block bg-blue-600 text-white px-4 py-2 rounded">Contact (LinkedIn) →</a>
               <a href="/" class="ml-4 text-blue-600">← Back</a>
+              <a href="${linkedin}" target="_blank" rel="noopener" class="inline-block bg-blue-600 text-white px-4 py-2 rounded">Contact (LinkedIn) →</a>
             </div>
           </div>
         </main>
@@ -2700,7 +2715,8 @@ app.listen(PORT, () => {
       ];
       for (const r of runs) {
         await new Promise((resolve) => {
-          execFile(pythonCmd, [scriptPath, '--region', r.region, '--index-id', r.indexId], { env: process.env }, (error, stdout, stderr) => {
+          // Always run with --quarterly so both Daily and Quarterly are populated on boot
+          execFile(pythonCmd, [scriptPath, '--region', r.region, '--index-id', r.indexId, '--quarterly'], { env: process.env }, (error, stdout, stderr) => {
             if (error) {
               console.error('[startup] FactSet run error', r, error);
               writeSchedulerLog(`startup FactSet error region=${r.region} index=${r.indexId}: ${error && error.message ? error.message : String(error)}`);
@@ -2712,35 +2728,6 @@ app.listen(PORT, () => {
             resolve();
           });
         });
-        // If quarterly table is empty, populate it once on startup
-        try {
-          const qt = quarterlyTableForIndex(r.indexId);
-          if (qt) {
-            const { data: qdates, error: qerr } = await supabase
-              .from(qt)
-              .select('as_of')
-              .order('as_of', { ascending: false })
-              .limit(1);
-            const hasQuarterly = !qerr && Array.isArray(qdates) && qdates.length > 0 && Boolean(qdates[0]?.as_of);
-            if (!hasQuarterly) {
-              await new Promise((resolve) => {
-                execFile(pythonCmd, [scriptPath, '--region', r.region, '--index-id', r.indexId, '--quarterly'], { env: process.env }, (error, stdout, stderr) => {
-                  if (error) {
-                    console.error('[startup] Quarterly run error', r, error);
-                    writeSchedulerLog(`startup Quarterly error region=${r.region} index=${r.indexId}: ${error && error.message ? error.message : String(error)}`);
-                  } else {
-                    console.log('[startup] Quarterly run ok', r, stdout);
-                    writeSchedulerLog(`startup Quarterly ok region=${r.region} index=${r.indexId}`);
-                    _logUsageRunSupabase(r.indexId);
-                  }
-                  resolve();
-                });
-              });
-            }
-          }
-        } catch (qe) {
-          console.warn('[startup] quarterly presence check failed', r, qe && qe.message ? qe.message : qe);
-        }
       }
     } catch (e) {
       console.error('[startup] FactSet batch failed', e && e.message ? e.message : e);
