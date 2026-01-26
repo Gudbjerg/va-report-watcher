@@ -67,6 +67,11 @@ function _parseTicker(tk) {
 function _stripClassWords(s) {
   return String(s || '')
     .replace(/\b(?:CLASS|CLA|SER\.?|SERIES)\s+[A-Z](?![A-Z])/gi, '')
+    // Remove patterns like "A share" / "B share"
+    .replace(/\b([A-Z])\s*SHARE\b/gi, '')
+    // Remove trailing single-letter class tokens like " Oyj A" or " (B)"
+    .replace(/\s*\(([A-Z])\)\s*$/g, '')
+    .replace(/\s+[A-Z]$/g, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -78,12 +83,16 @@ function _issuerKeyFromName(name) {
   return s;
 }
 function _issuerKeyFromRow(r) {
+  const nmRaw = r && (r.issuer || r.name);
+  if (nmRaw) {
+    const nm = _stripClassWords(nmRaw);
+    return _issuerKeyFromName(nm).toUpperCase();
+  }
   if (r && r.ticker) {
     const p = _parseTicker(r.ticker);
     if (p.base) return p.base.toUpperCase();
   }
-  const nm = r && (r.issuer || r.name);
-  return _issuerKeyFromName(nm).toUpperCase();
+  return '';
 }
 function _classFromRow(r) {
   const t = r && r.ticker ? String(r.ticker) : '';
@@ -825,11 +834,19 @@ app.get('/api/index/:indexId/constituents_grouped', async (req, res) => {
       const agg = ch.reduce((acc, r) => {
         acc.weight += Number(r.weight || 0);
         acc.capped_weight += Number(r.capped_weight || 0);
+        // Prefer explicit current capped if present; else derive from proposed and delta
+        const currCap = (typeof r.curr_weight_capped === 'number')
+          ? Number(r.curr_weight_capped)
+          : ((typeof r.capped_weight === 'number' && typeof r.delta_pct === 'number')
+            ? (Number(r.capped_weight) - Number(r.delta_pct))
+            : 0);
+        acc.curr_capped += currCap;
+        acc.curr_uncapped += Number(r.curr_weight_uncapped || 0);
         acc.mcap += Number(r.mcap || r.market_cap || 0);
         acc.delta_pct += Number(typeof r.delta_pct === 'number' ? r.delta_pct : 0);
         if (r.flags) acc.flags.push(String(r.flags));
         return acc;
-      }, { weight: 0, capped_weight: 0, mcap: 0, delta_pct: 0, flags: [] });
+      }, { weight: 0, capped_weight: 0, curr_capped: 0, curr_uncapped: 0, mcap: 0, delta_pct: 0, flags: [] });
       const first = ch[0] || {};
       const children = ch.map(r => ({ ...r, __class: _classFromRow(r) }));
       rows.push({
@@ -838,6 +855,8 @@ app.get('/api/index/:indexId/constituents_grouped', async (req, res) => {
         issuer: _stripClassWords(first.issuer || first.name || ''),
         weight: agg.weight,
         capped_weight: agg.capped_weight,
+        curr_weight_capped: agg.curr_capped,
+        curr_weight_uncapped: agg.curr_uncapped,
         mcap: agg.mcap,
         delta_pct: agg.delta_pct,
         flags: Array.from(new Set(agg.flags.filter(Boolean))).join('; '),
@@ -1571,7 +1590,11 @@ app.get('/index', async (req, res) => {
                 const aum = (selectedMeta.aum != null ? selectedMeta.aum : (aumByRegion[region] || null));
                 const ccy = selectedMeta.ccy || currencyByRegion[region] || '';
                 dailyRowsCache = rows.slice();
-                const sorted = sortRows(dailyRowsCache, (r)=> Number(r.capped_weight ?? r.weight ?? 0), dailySort.dir);
+                const sorted = sortRows(dailyRowsCache, (r)=> {
+                  const curr = (typeof r.curr_weight_capped === 'number') ? Number(r.curr_weight_capped)
+                    : ((typeof r.capped_weight === 'number' && typeof r.delta_pct === 'number') ? (Number(r.capped_weight) - Number(r.delta_pct)) : (typeof r.capped_weight === 'number' ? Number(r.capped_weight) : (typeof r.weight === 'number' ? Number(r.weight) : 0)));
+                  return curr;
+                }, dailySort.dir);
                 const topN = sorted.slice(0, dailyLimit);
                 const trs = topN.map(r => {
                   const hasCapDiff = (typeof r.capped_weight === 'number' && typeof r.weight === 'number' && Math.abs(r.capped_weight - r.weight) > 1e-9);
@@ -1580,7 +1603,10 @@ app.get('/index', async (req, res) => {
                   const mcapRaw = (r.market_cap != null ? Number(r.market_cap) : (r.mcap != null ? Number(r.mcap) : null));
                   const mcapBn = (mcapRaw != null) ? (mcapRaw / 1e9) : null;
                   // Current capped weight from row; Target = current + delta (only when flagged)
-                  const currCap = (r.capped_weight != null) ? Number(r.capped_weight) : (r.weight != null ? Number(r.weight) : null);
+                  const currCap = (typeof r.curr_weight_capped === 'number') ? Number(r.curr_weight_capped)
+                    : ((typeof r.capped_weight === 'number' && typeof r.delta_pct === 'number') ? (Number(r.capped_weight) - Number(r.delta_pct))
+                        : (typeof r.capped_weight === 'number' ? Number(r.capped_weight)
+                          : (typeof r.weight === 'number' ? Number(r.weight) : null)));
                   const targetCap = (currCap != null && typeof r.delta_pct === 'number') ? (currCap + Number(r.delta_pct)) : null;
                   const wPct = (currCap != null) ? (currCap * 100) : null; // display current capped
                   const cwPct = (targetCap != null) ? (targetCap * 100) : null; // display target only when flagged
@@ -1615,14 +1641,17 @@ app.get('/index', async (req, res) => {
                       const cls = ch.__class ? (' ('+ch.__class+')') : '';
                       const cmcap = (ch.market_cap != null ? Number(ch.market_cap) : (ch.mcap != null ? Number(ch.mcap) : null));
                       const cmcapBn = (cmcap != null ? cmcap/1e9 : null);
-                      const cW = (ch.capped_weight != null ? Number(ch.capped_weight) : (ch.weight != null ? Number(ch.weight) : null));
-                      const cT = (typeof ch.delta_pct==='number' && cW!=null ? (cW + Number(ch.delta_pct)) : null);
+                      const cW = (ch.curr_weight_capped != null ? Number(ch.curr_weight_capped) : (ch.capped_weight != null ? Number(ch.capped_weight) : (ch.weight != null ? Number(ch.weight) : null)));
+                      // Only show Target/Delta when flagged at parent or child level
+                      const childFlags = (ch.flags && String(ch.flags).trim()) || '';
+                      const childShowCalcs = Boolean(childFlags || flags);
+                      const cT = (childShowCalcs && typeof ch.delta_pct==='number' && cW!=null ? (cW + Number(ch.delta_pct)) : null);
                       const cWP = (cW!=null ? (cW*100).toFixed(2)+'%' : '');
                       const cTP = (cT!=null ? (cT*100).toFixed(2)+'%' : '');
-                      const cDP = (typeof ch.delta_pct==='number' ? (Number(ch.delta_pct)*100).toFixed(2)+'%' : '');
-                      const cDA = (typeof ch.delta_pct==='number' && aum ? Math.round(aum*Number(ch.delta_pct)).toLocaleString('en-DK') : '');
-                      const cVol = (typeof ch.delta_pct==='number' && ch.price!=null ? (aum*Number(ch.delta_pct)/Number(ch.price)) : null);
-                      const cDtc = (cVol!=null && ch.avg_daily_volume!=null && Number(ch.avg_daily_volume)>0 ? (Math.abs(cVol)/Number(ch.avg_daily_volume)).toFixed(2) : '');
+                      const cDP = (childShowCalcs && typeof ch.delta_pct==='number' ? (Number(ch.delta_pct)*100).toFixed(2)+'%' : '');
+                      const cDA = (childShowCalcs && typeof ch.delta_pct==='number' && aum ? Math.round(aum*Number(ch.delta_pct)).toLocaleString('en-DK') : '');
+                      const cVol = (childShowCalcs && typeof ch.delta_pct==='number' && ch.price!=null ? (aum*Number(ch.delta_pct)/Number(ch.price)) : null);
+                      const cDtc = (childShowCalcs && cVol!=null && ch.avg_daily_volume!=null && Number(ch.avg_daily_volume)>0 ? (Math.abs(cVol)/Number(ch.avg_daily_volume)).toFixed(2) : '');
                       return '<tr class="border-b hidden child-of-'+id+'">'
                         + '<td class="px-3 py-2 text-xs pl-7">'+nm+cls+'</td>'
                         + '<td class="px-3 py-2 text-xs text-right">'+(cmcapBn!=null? cmcapBn.toFixed(2): '')+'</td>'
@@ -1684,7 +1713,7 @@ app.get('/index', async (req, res) => {
                   const mcap = (row.market_cap != null ? Number(row.market_cap) : (row.mcap != null ? Number(row.mcap) : null));
                   const price = (!row.__multi && row.price != null ? Number(row.price) : null);
                   const weight = (row.weight != null ? Number(row.weight) : null);
-                  const cweight = (row.capped_weight != null ? Number(row.capped_weight) : null);
+                  const cweight = (row.curr_weight_capped != null ? Number(row.curr_weight_capped) : (row.capped_weight != null ? Number(row.capped_weight) : null));
                   const deltaFrac = (typeof row.delta_pct === 'number') ? Number(row.delta_pct) : null;
                   const deltaAmt = (aum && deltaFrac != null) ? (aum * deltaFrac) : null;
                   const dtcVal = (() => {
@@ -1718,7 +1747,9 @@ app.get('/index', async (req, res) => {
                       const rowClass = flags.includes('40% breach') ? 'bg-red-50' : (flags.includes('10% breach') ? 'bg-yellow-50' : '');
                       const mcapRaw = (r.market_cap != null ? Number(r.market_cap) : (r.mcap != null ? Number(r.mcap) : null));
                       const mcapBn = (mcapRaw != null) ? (mcapRaw / 1e9) : null;
-                      const currCap = (r.capped_weight != null) ? Number(r.capped_weight) : (r.weight != null ? Number(r.weight) : null);
+                      const currCap = (typeof r.curr_weight_capped === 'number') ? Number(r.curr_weight_capped)
+                        : ((typeof r.capped_weight === 'number' && typeof r.delta_pct === 'number') ? (Number(r.capped_weight) - Number(r.delta_pct))
+                            : (typeof r.capped_weight === 'number' ? Number(r.capped_weight) : (typeof r.weight === 'number' ? Number(r.weight) : null)));
                       const targetCap = (currCap != null && typeof r.delta_pct === 'number') ? (currCap + Number(r.delta_pct)) : null;
                       const wPct = (currCap != null) ? (currCap * 100) : null; // current capped
                       const cwPct = (targetCap != null) ? (targetCap * 100) : null; // target only when flagged

@@ -1,6 +1,7 @@
 # workers/indexes/index_calcs.py
 from datetime import date, datetime, timezone
 from typing import Dict, Tuple
+import re
 
 import pandas as pd
 
@@ -53,6 +54,28 @@ def _normalize_input(df: pd.DataFrame) -> pd.DataFrame:
             d.loc[:, "shares"] = 1.0
 
     d["mcap"] = d["mcap_uncapped"]
+
+    # Normalize issuer across share classes so A/B aggregate properly
+    def _issuer_key(row) -> str:
+        tk = str(row.get("ticker", "")).upper()
+        if tk:
+            pre = tk.split("-")[0]
+            # Remove .A / .B class markers and stray dots
+            no_class = re.sub(r"\.[A-Z](?=-|$)", "", pre)
+            base = no_class.replace(".", "").strip()
+            if base:
+                return base
+        nm = str(row.get("issuer") or row.get("name") or "").upper()
+        # Strip common class designators like "Class A", "Cla B", "Series B"
+        nm = re.sub(r"\b(?:CLASS|CLA|SER\.?|SERIES)\s+[A-Z](?![A-Z])", "", nm)
+        nm = re.sub(r"\s{2,}", " ", nm).strip()
+        return nm
+
+    try:
+        d["issuer"] = d.apply(_issuer_key, axis=1)
+    except Exception:
+        # Fallback to uppercase issuer/name
+        d["issuer"] = d.get("issuer", d["name"].str.upper())
     return d
 
 
@@ -286,7 +309,7 @@ def build_status(df_raw: pd.DataFrame, as_of: date, index_id: str, region: str, 
         lambda r: issuers_flags.get(r.get("issuer"), ""), axis=1)
     cols = [
         "index_id", "ticker", "issuer", "name", "price", "shares", "shares_capped",
-        "mcap", "mcap_uncapped", "mcap_capped", "weight", "capped_weight", "delta_pct", "avg_vol_30d", "as_of", "region", "flags",
+        "mcap", "mcap_uncapped", "mcap_capped", "curr_weight_capped", "weight", "capped_weight", "delta_pct", "avg_vol_30d", "as_of", "region", "flags",
     ]
     return out[cols].copy()
 
