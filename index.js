@@ -2710,6 +2710,17 @@ app.get('/api/rate', async (req, res) => {
     if (!fs.existsSync(file)) return res.json({ ok: true, snapshot: null });
     const txt = fs.readFileSync(file, 'utf8');
     const json = JSON.parse(txt || '{}');
+    // Ensure any sensitive header values are redacted before returning
+    try {
+      if (json && json.headers && typeof json.headers === 'object') {
+        const redactKeys = new Set(['set-cookie','cookie','authorization','x-datadirect-request-key','x-factset-api-request-key','x-api-key','api-key']);
+        const safe = {};
+        for (const [k,v] of Object.entries(json.headers)) {
+          safe[k] = redactKeys.has(String(k).toLowerCase()) ? '[redacted]' : v;
+        }
+        json.headers = safe;
+      }
+    } catch {}
     let fileMtime = null;
     try { const st = fs.statSync(file); fileMtime = st.mtime ? new Date(st.mtime).toISOString() : null; } catch { }
     return res.json({ ok: true, snapshot: json, fileMtime });

@@ -91,13 +91,36 @@ def _write_rate_snapshot(headers: Dict[str, str]) -> None:
     try:
         # Normalize a copy of headers to plain dict of strings
         hdrs = {str(k): str(v) for k, v in (headers or {}).items()}
+        # Redact sensitive header values before persisting
+        try:
+            redact_keys = {
+                'set-cookie', 'cookie', 'authorization',
+                'x-datadirect-request-key', 'x-factset-api-request-key',
+                'x-api-key', 'api-key'
+            }
+            safe_hdrs = {}
+            for k, v in hdrs.items():
+                kl = k.lower()
+                safe_hdrs[k] = ('[redacted]') if kl in redact_keys else v
+            hdrs = safe_hdrs
+        except Exception:
+            pass
         # Preferred FactSet headers
-        limit = _get_rate_header(
-            headers, 'X-FactSet-Api-RateLimit-Limit') or _get_rate_header(headers, 'X-RateLimit-Limit')
-        remaining = _get_rate_header(
-            headers, 'X-FactSet-Api-RateLimit-Remaining') or _get_rate_header(headers, 'X-RateLimit-Remaining')
-        reset = _get_rate_header(
-            headers, 'X-FactSet-Api-RateLimit-Reset') or _get_rate_header(headers, 'X-RateLimit-Reset')
+        limit = (
+            _get_rate_header(headers, 'X-FactSet-Api-RateLimit-Limit') or
+            _get_rate_header(headers, 'X-RateLimit-Limit') or
+            _get_rate_header(headers, 'RateLimit-Limit')
+        )
+        remaining = (
+            _get_rate_header(headers, 'X-FactSet-Api-RateLimit-Remaining') or
+            _get_rate_header(headers, 'X-RateLimit-Remaining') or
+            _get_rate_header(headers, 'RateLimit-Remaining')
+        )
+        reset = (
+            _get_rate_header(headers, 'X-FactSet-Api-RateLimit-Reset') or
+            _get_rate_header(headers, 'X-RateLimit-Reset') or
+            _get_rate_header(headers, 'RateLimit-Reset')
+        )
         # Variants for per-second/day, if provided by upstream
         limit_second = _get_rate_header(headers, 'X-RateLimit-Limit-Second')
         remaining_second = _get_rate_header(
