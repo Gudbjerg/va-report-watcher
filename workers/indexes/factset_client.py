@@ -423,7 +423,8 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
         df['avg_vol_30d_millions'] = pd.to_numeric(
             df['volume_last'], errors='coerce') / 1_000_000.0
 
-        cols = cols_default
+    # Ensure output column selection is always initialized
+    cols = cols_default
     for c in cols:
         if c not in df.columns:
             df[c] = None

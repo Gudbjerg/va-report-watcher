@@ -2928,7 +2928,11 @@ try {
 
     // Trigger FactSet worker for all markets (daily + quarterly)
     try {
-      const pythonCmd = process.env.PYTHON || 'python3';
+      let pythonCmd = process.env.PYTHON || 'python3';
+      try {
+        const venvPy = path.join(__dirname, '.venv', 'bin', process.platform === 'win32' ? 'python.exe' : 'python');
+        if (fs.existsSync(venvPy)) pythonCmd = venvPy;
+      } catch { }
       const scriptPath = path.join(__dirname, 'workers', 'indexes', 'main.py');
       const runs = [
         { region: 'CPH', indexId: process.env.CPH_INDEX_ID || 'KAXCAP' },
