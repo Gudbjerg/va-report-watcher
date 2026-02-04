@@ -448,7 +448,7 @@ def fetch_index_shares(region: str = 'CPH') -> pd.DataFrame:
         sym = 'OMXSALLS'
         cap = None
     formulas = ['FSYM_TICKER_EXCHANGE(0,"ID")',
-                f'EXG_OMX_SHARES(NOW,{sym},PI,{ccy},CLOSE)']
+                f'EXG_OMX_SHARES(NOW,{sym},PI,{ccy},ND)']
     if cap:
         formulas.append(f'EXG_OMX_SHARES(NOW,{cap},PI,{ccy},ND)')
 
