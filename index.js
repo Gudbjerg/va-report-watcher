@@ -1298,6 +1298,7 @@ app.get('/index', async (req, res) => {
                   <span id="factsetLeft" class="text-xs text-slate-500" aria-live="polite"></span>
                   <span id="monthLeft" class="text-xs text-slate-500" aria-live="polite"></span>
                   <button id="rateDetailsBtn" class="text-xs underline text-slate-600">Headers</button>
+                  <a href="/status" class="text-xs underline text-slate-600">Status</a>
                   <label class="text-xs text-slate-600 flex items-center gap-1"><input id="pauseRefresh" type="checkbox" class="align-middle"> Pause</label>
                   
                   <button id="refreshBtn" class="px-3 py-2 bg-yellow-400 text-slate-900 rounded">Refresh Selected</button>

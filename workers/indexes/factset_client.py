@@ -166,10 +166,11 @@ def _request_with_backoff(method: str, url: str, max_retries: int = 4, **kwargs)
                 r.headers, 'X-FactSet-Api-RateLimit-Remaining')
             reset = _get_rate_header(
                 r.headers, 'X-FactSet-Api-RateLimit-Reset')
+            # Always persist a snapshot, even if vendor omits explicit rate headers
             if limit or remaining:
                 print(
                     f"[rate] limit={limit} remaining={remaining} reset={reset}")
-                _write_rate_snapshot(r.headers)
+            _write_rate_snapshot(r.headers)
         except Exception:
             pass
         if r.status_code != 429 or attempt >= max_retries:
