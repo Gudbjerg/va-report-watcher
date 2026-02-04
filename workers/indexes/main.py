@@ -3,6 +3,7 @@ from datetime import date
 import argparse
 import os
 
+import pandas as pd
 from factset_client import fetch_index_raw
 from index_calcs import build_status, build_issuer_status, _compute_issuer_mcaps, _apply_daily_capping, _distribute_to_constituents
 from supabase_client import upsert_index_constituents, upsert_index_quarterly, upsert_index_issuers
@@ -29,6 +30,27 @@ def run_update() -> None:
 
     df_raw = fetch_index_raw(args.region)
     print(f"Fetched {len(df_raw)} rows from Formula API")
+    try:
+        # Diagnostics: check raw price/shares/mcap totals to trace zeros
+        pr_sum = pd.to_numeric(df_raw.get("price"), errors="coerce").sum()
+        sh_sum = pd.to_numeric(df_raw.get("shares"), errors="coerce").sum()
+        shc_sum = pd.to_numeric(df_raw.get(
+            "shares_capped"), errors="coerce").sum()
+        mc_sum = pd.to_numeric(df_raw.get("mcap"), errors="coerce").sum()
+        print(
+            f"[diag] price_sum={pr_sum:.2f} shares_sum={sh_sum:.2f} shares_capped_sum={shc_sum:.2f} mcap_sum={mc_sum:.2f}")
+        # Show a couple of rows where shares are zero but shares-only GET might have filled
+        try:
+            zero_rows = df_raw[(pd.to_numeric(df_raw.get("shares"), errors="coerce") <= 0) | (
+                pd.to_numeric(df_raw.get("shares"), errors="coerce").isna())].head(5)
+            if len(zero_rows) > 0:
+                print("[diag] sample zero-share tickers:")
+                print(zero_rows[["ticker", "price", "shares",
+                      "shares_capped"]].to_string(index=False))
+        except Exception:
+            pass
+    except Exception:
+        pass
 
     # Always compute DAILY status for constituents (never write quarterly logic into daily table)
     df_status = build_status(df_raw, as_of=as_of, index_id=args.index_id,

@@ -63,9 +63,11 @@ def _universe_expr(region: str) -> str:
     if override:
         return override
     if r == 'CPH':
-        return "(FG_CONSTITUENTS(187183,0,CLOSE))=1"
+        # Use capped KAXCAP index id 140476 per formulas builder
+        return "(FG_CONSTITUENTS(140476,0,CLOSE))=1"
     if r == 'HEL':
-        return "(FG_CONSTITUENTS(180553,0,CLOSE))=1"
+        # Update to capped HEL index id 188676
+        return "(FG_CONSTITUENTS(188676,0,CLOSE))=1"
     if r == 'STO':
         return "(FG_CONSTITUENTS(OMXSALLS,0,CLOSE))=1"
     return "(FG_CONSTITUENTS(187183,0,CLOSE))=1"
@@ -208,7 +210,7 @@ def _build_formulas(region: str) -> Dict[str, Any]:
         'FSYM_TICKER_EXCHANGE(0,"ID")',
         'FG_COMPANY_NAME',
         'FG_PRICE(NOW)',
-        f'EXG_OMX_SHARES(NOW,{shares_symbol},PI,{ccy},ND)',
+        f'EXG_OMX_SHARES(0,{shares_symbol},PI,{ccy},ND)',
         # Preferred 30D average volumes (both units) — shares and millions
         'P_VOLUME_AVG(0,-1/0/0,0)',   # actual shares (ones)
         'P_VOLUME_AVG(0,-1/0/0)',     # in millions
@@ -217,7 +219,7 @@ def _build_formulas(region: str) -> Dict[str, Any]:
     ]
     # Include capped shares if available
     if capped_symbol:
-        formulas.insert(4, f'EXG_OMX_SHARES(NOW,{capped_symbol},PI,{ccy},ND)')
+        formulas.insert(4, f'EXG_OMX_SHARES(0,{capped_symbol},PI,{ccy},ND)')
 
     return {
         'formulas': formulas,
@@ -381,10 +383,13 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
             for col in ('shares', 'shares_capped'):
                 sh_col = f'{col}_sh'
                 if sh_col in df.columns:
-                    # Only combine when the right-hand column has any non-null values
-                    # This avoids a pandas FutureWarning about concatenation with empty entries
-                    if df[sh_col].notna().any():
-                        df[col] = df[col].combine_first(df[sh_col])
+                    # Prefer numeric RHS when LHS is null or non-positive
+                    lhs = pd.to_numeric(
+                        df[col], errors='coerce') if col in df.columns else pd.Series([None] * len(df))
+                    rhs = pd.to_numeric(df[sh_col], errors='coerce')
+                    # Fill where lhs is NaN or <= 0 and rhs is positive
+                    use_rhs = (lhs.isna() | (lhs <= 0)) & (rhs > 0)
+                    df[col] = lhs.where(~use_rhs, rhs)
             # Drop helper columns
             drop_cols = [c for c in df.columns if c.endswith('_sh')]
             if drop_cols:
