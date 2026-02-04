@@ -231,6 +231,9 @@ def _build_formulas(region: str) -> Dict[str, Any]:
 def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
     universe = _universe_expr(region)
     f = _build_formulas(region)
+    # Ensure column list is always defined, even if any branch earlier fails
+    cols_default = ['ticker', 'issuer', 'name', 'price', 'shares',
+                    'shares_capped', 'avg_vol_30d_millions', 'mcap', 'region']
 
     if USE_SDK:
         # Use SDK with header capture and 429-aware backoff
@@ -420,8 +423,7 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
         df['avg_vol_30d_millions'] = pd.to_numeric(
             df['volume_last'], errors='coerce') / 1_000_000.0
 
-        cols = ['ticker', 'issuer', 'name', 'price', 'shares',
-                'shares_capped', 'avg_vol_30d_millions', 'mcap', 'region']
+        cols = cols_default
     for c in cols:
         if c not in df.columns:
             df[c] = None
