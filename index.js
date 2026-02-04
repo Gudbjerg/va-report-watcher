@@ -1364,8 +1364,23 @@ app.get('/index', async (req, res) => {
                   if (hidden && !panel.innerHTML.trim()) {
                     panel.innerHTML = '<div class="text-slate-600 mb-1">Rate headers snapshot</div><pre class="whitespace-pre-wrap">(no headers yet)</pre>';
                   }
+                  // Best-effort: persist latest snapshot to Supabase when toggled
+                  try { fetch('/api/rate/log', { method: 'POST' }); } catch(e) {}
                 });
               }
+            })();
+
+            // Persist Pause preference to localStorage (default: unpaused)
+            (function(){
+              try {
+                const saved = localStorage.getItem('pauseRefresh');
+                if (pauseCb) {
+                  pauseCb.checked = (saved === '1');
+                  pauseCb.addEventListener('change', () => {
+                    try { localStorage.setItem('pauseRefresh', pauseCb.checked ? '1' : '0'); } catch(e) {}
+                  });
+                }
+              } catch(e) {}
             })();
             function regionFor(indexId){
               const id = String(indexId||'').toUpperCase();
@@ -2699,6 +2714,122 @@ app.get('/api/rate', async (req, res) => {
     return res.json({ ok: true, snapshot: json, fileMtime });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
+  }
+});
+
+// API: persist last rate-limit snapshot into Supabase (optional, no-op if not configured)
+app.post('/api/rate/log', async (req, res) => {
+  try {
+    const table = (process.env.SUPABASE_HEADERS_TABLE || 'api_headers_log');
+    if (!supabase || typeof supabase.from !== 'function') return res.json({ ok: true, persisted: false, reason: 'supabase not configured' });
+    const file = path.join(__dirname, 'logs', 'api_rate.json');
+    if (!fs.existsSync(file)) return res.json({ ok: true, persisted: false, reason: 'no snapshot' });
+    const snap = JSON.parse(fs.readFileSync(file, 'utf8') || '{}');
+    const row = {
+      created_at: (snap.ts || new Date().toISOString()),
+      limit: snap.limit ?? null,
+      remaining: snap.remaining ?? null,
+      reset: snap.reset ?? null,
+      limit_second: snap.limit_second ?? null,
+      remaining_second: snap.remaining_second ?? null,
+      limit_day: snap.limit_day ?? null,
+      remaining_day: snap.remaining_day ?? null,
+      retry_after: snap.retry_after ?? null,
+      headers: snap.headers || null
+    };
+    try { await supabase.from(table).insert([row]); } catch(e) { /* ignore insert errors */ }
+    return res.json({ ok: true, persisted: true });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
+  }
+});
+
+// API: lightweight status across markets — counts, latest as_of, totals
+app.get('/api/status', async (req, res) => {
+  async function getIndexStatus(idx) {
+    try {
+      const dailyTable = tableForIndex(idx);
+      const issuersTable = issuersTableForIndex(idx);
+      const quarterlyTable = quarterlyTableForIndex(idx);
+      // latest as_of dates
+      const { data: dDates } = await supabase.from(dailyTable).select('as_of').order('as_of', { ascending: false }).limit(1);
+      const asOfDaily = dDates && dDates[0] ? dDates[0].as_of : null;
+      const { data: qDates } = quarterlyTable ? await supabase.from(quarterlyTable).select('as_of').order('as_of', { ascending: false }).limit(1) : { data: [] };
+      const asOfQuarterly = qDates && qDates[0] ? qDates[0].as_of : null;
+      // counts
+      let dailyCount = 0, issuersCount = 0, quarterlyCount = 0;
+      if (asOfDaily) {
+        const { count: dCount } = await supabase.from(dailyTable).select('ticker', { count: 'exact', head: true }).eq('as_of', asOfDaily);
+        dailyCount = Number(dCount || 0);
+      }
+      if (issuersTable && asOfDaily) {
+        const { count: iCount } = await supabase.from(issuersTable).select('issuer', { count: 'exact', head: true }).eq('as_of', asOfDaily);
+        issuersCount = Number(iCount || 0);
+      }
+      if (quarterlyTable && asOfQuarterly) {
+        const { count: qCount } = await supabase.from(quarterlyTable).select('ticker', { count: 'exact', head: true }).eq('as_of', asOfQuarterly);
+        quarterlyCount = Number(qCount || 0);
+      }
+      // totals
+      async function sumTotals(tableName, asOf) {
+        if (!tableName || !asOf) return { mcap_uncapped: null, mcap_capped: null };
+        const { data } = await supabase.from(tableName).select('mcap,mcap_capped').eq('as_of', asOf).limit(5000);
+        const rows = Array.isArray(data) ? data : [];
+        const unc = rows.reduce((s, r) => s + (Number(r.mcap || 0) || 0), 0);
+        const cap = rows.reduce((s, r) => s + (Number(r.mcap_capped || 0) || 0), 0);
+        return { mcap_uncapped: unc, mcap_capped: (cap > 0 ? cap : null) };
+      }
+      const totalsDaily = await sumTotals(dailyTable, asOfDaily);
+      const totalsQuarterly = await sumTotals(quarterlyTable, asOfQuarterly);
+      return { indexId: idx, asOfDaily, asOfQuarterly, dailyCount, issuersCount, quarterlyCount, totalsDaily, totalsQuarterly };
+    } catch (e) {
+      return { indexId: idx, error: e && e.message ? e.message : String(e) };
+    }
+  }
+  try {
+    const hel = (process.env.HEL_INDEX_ID || 'HELXCAP');
+    const sto = (process.env.STO_INDEX_ID || 'OMXSALLS');
+    const results = [];
+    for (const idx of ['KAXCAP', hel]) { results.push(await getIndexStatus(idx)); }
+    res.json({ ok: true, status: results });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
+  }
+});
+
+// Status page: simple dashboard view
+app.get('/status', async (req, res) => {
+  try {
+    const r = await (await fetch('http://localhost:' + PORT + '/api/status')).json().catch(()=>({ ok:false }));
+    const items = (r && r.status) ? r.status : [];
+    res.send(`
+      <html>
+        <head>${renderHead('Status')}</head>
+        <body class="bg-gray-50 p-6">
+          ${renderHeader()}
+          <main class="max-w-6xl mx-auto p-6">
+            <div class="bg-white rounded-xl shadow p-6">
+              <h1 class="text-2xl font-bold mb-4">System Status</h1>
+              <div class="grid md:grid-cols-2 gap-4">
+                ${items.map(it=>`
+                  <div class="border rounded p-3">
+                    <div class="font-semibold mb-1">${it.indexId}</div>
+                    <div class="text-sm text-slate-600">Daily as_of: ${it.asOfDaily||'n/a'} · Quarterly as_of: ${it.asOfQuarterly||'n/a'}</div>
+                    <div class="text-sm">Rows — daily: ${it.dailyCount} · issuers: ${it.issuersCount} · quarterly: ${it.quarterlyCount}</div>
+                    <div class="text-sm">Totals — daily uncapped: ${it.totalsDaily?.mcap_uncapped?.toLocaleString?.('en-DK')||'n/a'} · capped: ${it.totalsDaily?.mcap_capped?.toLocaleString?.('en-DK')||'n/a'}</div>
+                    <div class="text-sm">Totals — quarterly uncapped: ${it.totalsQuarterly?.mcap_uncapped?.toLocaleString?.('en-DK')||'n/a'} · capped: ${it.totalsQuarterly?.mcap_capped?.toLocaleString?.('en-DK')||'n/a'}</div>
+                  </div>
+                `).join('')}
+              </div>
+              <div class="mt-4 text-sm"><a href="/index" class="text-blue-600">← Back to Index Overview</a></div>
+            </div>
+          </main>
+          ${renderFooter()}
+        </body>
+      </html>
+    `);
+  } catch (e) {
+    res.status(500).send('status error: ' + (e && e.message ? e.message : String(e)));
   }
 });
 
