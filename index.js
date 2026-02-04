@@ -416,7 +416,7 @@ function renderHeader() {
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" class="w-4 h-4" fill="currentColor" aria-hidden="true"><path d="M100.28 448H7.4V148.9h92.88zm-46.44-340a53.66 53.66 0 1 1 53.66-53.66 53.66 53.66 0 0 1-53.66 53.66zM447.9 448h-92.68V302.4c0-34.7-.7-79.4-48.4-79.4-48.4 0-55.8 37.8-55.8 76.8V448h-92.7V148.9h89V196h1.3c12.4-23.5 42.6-48.4 87.7-48.4 93.8 0 111.2 61.8 111.2 142.3V448z"/></svg>
                         <span class="sr-only">LinkedIn</span>
                       </a>
-              <a href="/contact" class="px-3 py-2 rounded bg-yellow-400 text-slate-900 font-semibold">Login/Sign Up</a>
+              <a href="/contact" class="px-3 py-2 rounded bg-yellow-400 text-slate-900 font-semibold">Login</a>
             </nav>
             <button id="mobileMenuBtn" class="md:hidden text-slate-600" aria-expanded="false" aria-controls="mobileMenu" aria-label="Open menu">☰</button>
           </div>
@@ -426,7 +426,7 @@ function renderHeader() {
               <a href="/watchers" class="py-2">Watchers</a>
               <a href="/product/ai-analyst" class="py-2">AI Analyst</a>
               <a href="/about" class="py-2">About</a>
-              <a href="/contact" class="py-2">Login/Sign Up</a>
+              <a href="/contact" class="py-2">Login</a>
             </div>
           </div>
         </header>
