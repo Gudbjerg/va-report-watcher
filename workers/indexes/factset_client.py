@@ -82,16 +82,38 @@ def _get_rate_header(headers: Dict[str, str], key: str) -> str | None:
 
 
 def _write_rate_snapshot(headers: Dict[str, str]) -> None:
+    """Persist a rate snapshot including all response headers and normalized fields.
+    Captures both FactSet-specific keys (X-FactSet-Api-RateLimit-*) and common variants
+    like X-RateLimit-* and Retry-After. This helps diagnose 429s precisely.
+    """
     try:
-        limit = _get_rate_header(headers, 'X-FactSet-Api-RateLimit-Limit')
+        # Normalize a copy of headers to plain dict of strings
+        hdrs = {str(k): str(v) for k, v in (headers or {}).items()}
+        # Preferred FactSet headers
+        limit = _get_rate_header(
+            headers, 'X-FactSet-Api-RateLimit-Limit') or _get_rate_header(headers, 'X-RateLimit-Limit')
         remaining = _get_rate_header(
-            headers, 'X-FactSet-Api-RateLimit-Remaining')
-        reset = _get_rate_header(headers, 'X-FactSet-Api-RateLimit-Reset')
+            headers, 'X-FactSet-Api-RateLimit-Remaining') or _get_rate_header(headers, 'X-RateLimit-Remaining')
+        reset = _get_rate_header(
+            headers, 'X-FactSet-Api-RateLimit-Reset') or _get_rate_header(headers, 'X-RateLimit-Reset')
+        # Variants for per-second/day, if provided by upstream
+        limit_second = _get_rate_header(headers, 'X-RateLimit-Limit-Second')
+        remaining_second = _get_rate_header(
+            headers, 'X-RateLimit-Remaining-Second')
+        limit_day = _get_rate_header(headers, 'X-RateLimit-Limit-Day')
+        remaining_day = _get_rate_header(headers, 'X-RateLimit-Remaining-Day')
+        retry_after = _get_rate_header(headers, 'Retry-After')
         payload = {
             'ts': datetime.utcnow().isoformat() + 'Z',
             'limit': limit,
             'remaining': remaining,
-            'reset': reset
+            'reset': reset,
+            'limit_second': limit_second,
+            'remaining_second': remaining_second,
+            'limit_day': limit_day,
+            'remaining_day': remaining_day,
+            'retry_after': retry_after,
+            'headers': hdrs,
         }
         path = PROJECT_ROOT / 'logs' / 'api_rate.json'
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +121,33 @@ def _write_rate_snapshot(headers: Dict[str, str]) -> None:
             json.dump(payload, f)
     except Exception:
         pass
+
+
+def _calc_wait_from_headers(headers: Dict[str, str] | None, attempt: int) -> float:
+    """Given response headers, estimate a backoff wait in seconds."""
+    import time
+    if not headers:
+        return min(8.0, 1.5 * (2 ** attempt))
+    retry_after = _get_rate_header(headers, 'Retry-After')
+    if retry_after:
+        try:
+            v = float(retry_after)
+            if v > 0:
+                return v
+        except Exception:
+            pass
+    reset = _get_rate_header(
+        headers, 'X-FactSet-Api-RateLimit-Reset') or _get_rate_header(headers, 'X-RateLimit-Reset')
+    if reset:
+        try:
+            reset_val = float(reset)
+            now = time.time()
+            wait_s = max(1.0, reset_val - now)
+            return min(wait_s, 30.0)
+        except Exception:
+            pass
+    # Fallback exponential backoff with cap
+    return min(8.0, 1.5 * (2 ** attempt))
 
 
 def _request_with_backoff(method: str, url: str, max_retries: int = 4, **kwargs):
@@ -124,26 +173,7 @@ def _request_with_backoff(method: str, url: str, max_retries: int = 4, **kwargs)
         if r.status_code != 429 or attempt >= max_retries:
             return r
         # Determine wait time
-        retry_after = _get_rate_header(r.headers, 'Retry-After')
-        wait_s: float | None = None
-        if retry_after:
-            try:
-                wait_s = float(retry_after)
-            except Exception:
-                wait_s = None
-        if wait_s is None:
-            reset = _get_rate_header(
-                r.headers, 'X-FactSet-Api-RateLimit-Reset')
-            if reset:
-                try:
-                    # Some APIs send epoch seconds for reset
-                    reset_val = float(reset)
-                    now = time.time()
-                    wait_s = max(1.0, reset_val - now)
-                except Exception:
-                    wait_s = None
-        if wait_s is None:
-            wait_s = min(8.0, 1.5 * (2 ** attempt))
+        wait_s = _calc_wait_from_headers(r.headers, attempt)
         attempt += 1
         print(
             f"[rate] 429 received — backing off for {wait_s:.2f}s (attempt {attempt}/{max_retries})")
@@ -154,16 +184,15 @@ def _build_formulas(region: str) -> Dict[str, Any]:
     r = (region or 'CPH').upper()
     # Allow runtime overrides via env; fall back to per-region defaults
     defaults = {
-        'CPH': {'shares_symbol': 'OMXCALLS', 'capped_symbol': 'OMXCCAPX', 'weight_symbol': 'OMXCALLS', 'ccy': 'DKK'},
-        'HEL': {'shares_symbol': 'OMXHALLS', 'capped_symbol': 'OMXHCAPX', 'weight_symbol': 'OMXHALLS', 'ccy': 'EUR'},
-        'STO': {'shares_symbol': 'OMXSALLS', 'capped_symbol': None,         'weight_symbol': 'OMXSALLS', 'ccy': 'SEK'},
+        'CPH': {'shares_symbol': 'OMXCALLS', 'capped_symbol': 'OMXCCAPX', 'ccy': 'DKK'},
+        'HEL': {'shares_symbol': 'OMXHALLS', 'capped_symbol': 'OMXHCAPX', 'ccy': 'EUR'},
+        'STO': {'shares_symbol': 'OMXSALLS', 'capped_symbol': None,         'ccy': 'SEK'},
     }
     base = defaults.get(r, defaults['CPH']).copy()
-    # Env overrides (optional): FORMULA_SHARES_SYMBOL_<REG>, FORMULA_CAPPED_SYMBOL_<REG>, FORMULA_WEIGHT_SYMBOL_<REG>, FORMULA_CCY_<REG>
+    # Env overrides (optional): FORMULA_SHARES_SYMBOL_<REG>, FORMULA_CAPPED_SYMBOL_<REG>, FORMULA_CCY_<REG>
     for key, env_key in (
         ('shares_symbol', f'FORMULA_SHARES_SYMBOL_{r}'),
         ('capped_symbol', f'FORMULA_CAPPED_SYMBOL_{r}'),
-        ('weight_symbol', f'FORMULA_WEIGHT_SYMBOL_{r}'),
         ('ccy', f'FORMULA_CCY_{r}'),
     ):
         val = os.environ.get(env_key)
@@ -173,15 +202,13 @@ def _build_formulas(region: str) -> Dict[str, Any]:
     shares_symbol = str(base['shares_symbol']).upper()
     capped_symbol = str(base['capped_symbol']).upper(
     ) if base['capped_symbol'] else None
-    weight_symbol = str(base['weight_symbol']).upper()
     ccy = str(base['ccy']).upper()
 
     formulas = [
         'FSYM_TICKER_EXCHANGE(0,"ID")',
         'FG_COMPANY_NAME',
         'FG_PRICE(NOW)',
-        f'EXG_OMX_SHARES(0,{shares_symbol},PI,{ccy},ND)',
-        f'EXG_OMX_WEIGHT(0,{weight_symbol},PI,{ccy},ND)',
+        f'EXG_OMX_SHARES(NOW,{shares_symbol},PI,{ccy},ND)',
         # Preferred 30D average volumes (both units) — shares and millions
         'P_VOLUME_AVG(0,-1/0/0,0)',   # actual shares (ones)
         'P_VOLUME_AVG(0,-1/0/0)',     # in millions
@@ -190,15 +217,13 @@ def _build_formulas(region: str) -> Dict[str, Any]:
     ]
     # Include capped shares if available
     if capped_symbol:
-        formulas.insert(4, f'EXG_OMX_SHARES(0,{capped_symbol},PI,{ccy},ND)')
-        formulas.insert(5, f'EXG_OMX_WEIGHT(0,{capped_symbol},PI,{ccy},ND)')
+        formulas.insert(4, f'EXG_OMX_SHARES(NOW,{capped_symbol},PI,{ccy},ND)')
 
     return {
         'formulas': formulas,
         'flatten': 'Y',
         '_shares_symbol': shares_symbol,
         '_capped_symbol': capped_symbol,
-        '_weight_symbol': weight_symbol,
         '_ccy': ccy,
     }
 
@@ -208,6 +233,8 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
     f = _build_formulas(region)
 
     if USE_SDK:
+        # Use SDK with header capture and 429-aware backoff
+        import time
         with _get_client() as api_client:
             api = CrossSectionalApi(api_client)
             req = CrossSectionalRequest(
@@ -218,9 +245,50 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
                     flatten=f["flatten"]
                 )
             )
-            resp = api.get_cross_sectional_data_for_list(
-                req).get_response_200()
-            raw = resp.to_dict().get("data", [])
+            max_retries = 4
+            attempt = 0
+            raw = []
+            while True:
+                try:
+                    # Prefer with_http_info to access headers
+                    call_with_info = getattr(
+                        api, 'get_cross_sectional_data_for_list_with_http_info', None)
+                    if callable(call_with_info):
+                        data_obj, status_code, headers = call_with_info(req)
+                        try:
+                            _write_rate_snapshot(headers or {})
+                        except Exception:
+                            pass
+                        raw = (data_obj.to_dict() or {}).get('data', [])
+                    else:
+                        resp_obj = api.get_cross_sectional_data_for_list(
+                            req).get_response_200()
+                        # Try best-effort header retrieval from client internals
+                        try:
+                            last = getattr(api_client, 'last_response', None)
+                            if last and getattr(last, 'headers', None):
+                                _write_rate_snapshot(last.headers)
+                        except Exception:
+                            pass
+                        raw = (resp_obj.to_dict() or {}).get('data', [])
+                    break
+                except Exception as e:
+                    # Handle 429 with backoff using headers from exception when available
+                    status = getattr(e, 'status', None) or getattr(
+                        e, 'status_code', None)
+                    headers = getattr(e, 'headers', None) or {}
+                    if status == 429 and attempt < max_retries:
+                        try:
+                            _write_rate_snapshot(headers)
+                        except Exception:
+                            pass
+                        wait_s = _calc_wait_from_headers(headers, attempt)
+                        attempt += 1
+                        print(
+                            f"[rate] SDK 429 — backing off {wait_s:.2f}s (attempt {attempt}/{max_retries})")
+                        time.sleep(wait_s)
+                        continue
+                    raise
     else:
         headers = {'Accept': 'application/json',
                    'Content-Type': 'application/json'}
@@ -288,15 +356,7 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
         found_capped = _find_col('EXG_OMX_SHARES', str(capped_symbol).upper())
         if found_capped:
             rename_map[found_capped] = 'shares_capped'
-    found_weight = _find_col('EXG_OMX_WEIGHT', shares_symbol)
-    if found_weight:
-        rename_map[found_weight] = 'omx_weight'
-    # Map capped weight when available
-    if capped_symbol:
-        found_weight_cap = _find_col(
-            'EXG_OMX_WEIGHT', str(capped_symbol).upper())
-        if found_weight_cap:
-            rename_map[found_weight_cap] = 'omx_weight_capped'
+    # Intentionally do not fetch or map API weights; we compute weights from MCAP only
 
     df = df.rename(columns=rename_map)
 
@@ -360,8 +420,8 @@ def fetch_index_raw(region: str = 'CPH') -> pd.DataFrame:
         df['avg_vol_30d_millions'] = pd.to_numeric(
             df['volume_last'], errors='coerce') / 1_000_000.0
 
-    cols = ['ticker', 'issuer', 'name', 'price', 'shares',
-            'shares_capped', 'omx_weight', 'omx_weight_capped', 'avg_vol_30d_millions', 'mcap', 'region']
+        cols = ['ticker', 'issuer', 'name', 'price', 'shares',
+                'shares_capped', 'avg_vol_30d_millions', 'mcap', 'region']
     for c in cols:
         if c not in df.columns:
             df[c] = None

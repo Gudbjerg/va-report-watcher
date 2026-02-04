@@ -11,6 +11,7 @@ create table if not exists public.index_constituents_kaxcap (
   price numeric,
   shares numeric,
   mcap numeric,
+  mcap_capped numeric,
   weight numeric,
   capped_weight numeric,
   delta_pct numeric,

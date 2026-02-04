@@ -23,6 +23,8 @@ app.use('/assets', express.static(path.join(__dirname, 'assets')));
 // Simple in-memory run guard to prevent concurrent duplicate runs
 const activeRuns = new Map(); // key: indexId, value: boolean
 const lastRunTimes = new Map(); // key: indexId, value: timestamp ms
+// Track active child processes to allow listing and cancellation
+const activeProcesses = new Map(); // key: indexId, value: { cp, startedAt, args }
 // Simple daily usage tracker (tokens/runs) with configurable limit
 const FACTSET_DAILY_LIMIT = Number(process.env.FACTSET_DAILY_LIMIT || 40);
 let usageState = { date: new Date().toISOString().slice(0, 10), total: 0, byIndex: new Map() };
@@ -790,17 +792,95 @@ app.post('/api/kaxcap/run', (req, res) => {
     _incUsage(idxKey);
     _logUsageRunFile(idxKey);
     _logUsageRunSupabase(idxKey); // fire-and-forget
-    execFile(pythonCmd, args, { env: process.env }, (error, stdout, stderr) => {
+    const childProc = execFile(pythonCmd, args, { env: process.env }, (error, stdout, stderr) => {
       activeRuns.delete(idxKey);
+      // Try to read last saved rate snapshot from worker
+      let rateSnap = null;
+      try {
+        const rf = path.join(__dirname, 'logs', 'api_rate.json');
+        if (fs.existsSync(rf)) {
+          const txt = fs.readFileSync(rf, 'utf8');
+          rateSnap = JSON.parse(txt || '{}');
+        }
+      } catch (e) { /* ignore */ }
       if (error) {
         console.error('[kaxcap-run] error:', error);
         if (stderr) console.error('[kaxcap-run] stderr:', stderr);
-        return res.status(500).json({ ok: false, error: String(error), stderr, usage: _getUsage() });
+        return res.status(500).json({ ok: false, error: String(error), stderr, usage: _getUsage(), rate: rateSnap });
       }
       if (stderr) console.warn('[kaxcap-run] stderr:', stderr);
       console.log('[kaxcap-run] stdout:', stdout);
-      return res.json({ ok: true, stdout, startedAt: new Date(nowTs).toISOString(), usage: _getUsage() });
+      return res.json({ ok: true, stdout, startedAt: new Date(nowTs).toISOString(), usage: _getUsage(), rate: rateSnap });
     });
+    // Track child process for listing/cancellation
+    try {
+      activeProcesses.set(idxKey, { cp: childProc, startedAt: new Date(nowTs).toISOString(), args });
+      childProc.on('exit', (code, signal) => {
+        activeProcesses.delete(idxKey);
+        console.log('[kaxcap-run] process exit', { indexId: idxKey, code, signal });
+      });
+    } catch (e) {
+      console.warn('[kaxcap-run] failed to track child process:', e && e.message ? e.message : e);
+    }
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
+  }
+});
+
+// API: list active runs and their process info
+app.get('/api/runs/active', (req, res) => {
+  try {
+    const items = [];
+    for (const [idx, info] of activeProcesses.entries()) {
+      items.push({
+        indexId: idx,
+        pid: info && info.cp && info.cp.pid ? info.cp.pid : null,
+        startedAt: info && info.startedAt ? info.startedAt : null,
+        args: info && Array.isArray(info.args) ? info.args : []
+      });
+    }
+    return res.json({ active: items, count: items.length });
+  } catch (e) {
+    return res.status(500).json({ error: e && e.message ? e.message : String(e) });
+  }
+});
+
+// API: cancel a running worker for the given indexId (best-effort SIGTERM)
+app.delete('/api/kaxcap/run', (req, res) => {
+  try {
+    const { indexId } = Object.assign({}, req.query, req.body);
+    const idxKey = String(indexId || '').toUpperCase();
+    if (!idxKey) return res.status(400).json({ ok: false, error: 'indexId required' });
+    const info = activeProcesses.get(idxKey);
+    if (!info || !info.cp) {
+      return res.status(404).json({ ok: false, error: 'No active run for ' + idxKey });
+    }
+    const pid = info.cp.pid || null;
+    let terminated = false;
+    try {
+      terminated = info.cp.kill('SIGTERM');
+    } catch (e) {
+      console.warn('[cancel] SIGTERM failed for', idxKey, e && e.message ? e.message : e);
+    }
+    // Fallback: force kill after 5s if still present
+    setTimeout(() => {
+      try {
+        if (activeProcesses.has(idxKey)) {
+          const inf = activeProcesses.get(idxKey);
+          if (inf && inf.cp) {
+            inf.cp.kill('SIGKILL');
+          }
+          activeProcesses.delete(idxKey);
+          activeRuns.delete(idxKey);
+          console.log('[cancel] SIGKILL applied for', idxKey);
+        }
+      } catch (e) {
+        console.warn('[cancel] SIGKILL failed for', idxKey, e && e.message ? e.message : e);
+      }
+    }, 5000);
+    // mark as not active immediately for UI responsiveness
+    activeRuns.delete(idxKey);
+    return res.json({ ok: true, indexId: idxKey, pid, terminatedRequested: true });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
   }
@@ -842,9 +922,17 @@ app.get('/api/index/:indexId/constituents', async (req, res) => {
       }, 0);
       // Dedupe by ticker, keep latest updated_at
       rows = dedupeLatestBy(raw, 'ticker');
-      return res.json({ asOf, lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null), rows });
+      // Totals (uncapped from mcap; capped when available)
+      const totals = (() => {
+        try {
+          const unc = (rows || []).reduce((s, r) => s + (Number(r.mcap || 0) || 0), 0);
+          const cap = (rows || []).reduce((s, r) => s + (Number(r.mcap_capped || 0) || 0), 0);
+          return { mcap_uncapped: unc, mcap_capped: (cap > 0 ? cap : null) };
+        } catch { return { mcap_uncapped: null, mcap_capped: null }; }
+      })();
+      return res.json({ asOf, lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null), rows, totals });
     }
-    res.json({ asOf, lastUpdated: null, rows: [] });
+    res.json({ asOf, lastUpdated: null, rows: [], totals: { mcap_uncapped: null, mcap_capped: null } });
   } catch (e) {
     res.status(500).json({ error: e && e.message ? e.message : String(e) });
   }
@@ -921,7 +1009,15 @@ app.get('/api/index/:indexId/constituents_grouped', async (req, res) => {
     }
     // order by capped_weight desc for consistency
     rows.sort((a, b) => Number(b.capped_weight || 0) - Number(a.capped_weight || 0));
-    return res.json({ asOf, lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null), rows });
+    // Totals across raw rows for this as_of
+    const totals = (() => {
+      try {
+        const unc = (raw || []).reduce((s, r) => s + (Number(r.mcap || 0) || 0), 0);
+        const cap = (raw || []).reduce((s, r) => s + (Number(r.mcap_capped || 0) || 0), 0);
+        return { mcap_uncapped: unc, mcap_capped: (cap > 0 ? cap : null) };
+      } catch { return { mcap_uncapped: null, mcap_capped: null }; }
+    })();
+    return res.json({ asOf, lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null), rows, totals });
   } catch (e) {
     res.status(500).json({ error: e && e.message ? e.message : String(e) });
   }
@@ -996,9 +1092,16 @@ app.get('/api/index/:indexId/quarterly', async (req, res) => {
         return t > mx ? t : mx;
       }, 0);
       rows = dedupeLatestBy(raw, 'ticker');
-      return res.json({ asOf, lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null), rows });
+      const totals = (() => {
+        try {
+          const unc = (rows || []).reduce((s, r) => s + (Number(r.mcap_uncapped || 0) || 0), 0);
+          const cap = (rows || []).reduce((s, r) => s + (Number(r.mcap_capped || 0) || 0), 0);
+          return { mcap_uncapped: unc, mcap_capped: (cap > 0 ? cap : null) };
+        } catch { return { mcap_uncapped: null, mcap_capped: null }; }
+      })();
+      return res.json({ asOf, lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null), rows, totals });
     }
-    res.json({ asOf, lastUpdated: null, rows: [] });
+    res.json({ asOf, lastUpdated: null, rows: [], totals: { mcap_uncapped: null, mcap_capped: null } });
   } catch (e) {
     res.status(500).json({ error: e && e.message ? e.message : String(e) });
   }
@@ -1149,6 +1252,15 @@ app.get('/api/index/:indexId/quarterly_grouped', async (req, res) => {
     }
     rows.sort((a, b) => Number(b.mcap_uncapped || 0) - Number(a.mcap_uncapped || 0));
 
+    // Totals for quarterly
+    const totals = (() => {
+      try {
+        const unc = (qEnriched || []).reduce((s, r) => s + (Number(r.mcap_uncapped || r.mcap || 0) || 0), 0);
+        const cap = (qEnriched || []).reduce((s, r) => s + (Number(r.mcap_capped || 0) || 0), 0);
+        return { mcap_uncapped: unc, mcap_capped: (cap > 0 ? cap : null) };
+      } catch { return { mcap_uncapped: null, mcap_capped: null }; }
+    })();
+
     return res.json({
       asOf,
       lastUpdated: (lastUpdated ? new Date(lastUpdated).toISOString() : null),
@@ -1156,7 +1268,8 @@ app.get('/api/index/:indexId/quarterly_grouped', async (req, res) => {
       enrichmentDailyAsOf,
       enrichmentDailyUpdatedAt: (enrichmentDailyUpdatedAt ? new Date(enrichmentDailyUpdatedAt).toISOString() : null),
       enrichmentMixed,
-      quarterlyCutoff: qCutoff || null
+      quarterlyCutoff: qCutoff || null,
+      totals
     });
   } catch (e) {
     res.status(500).json({ error: e && e.message ? e.message : String(e) });
@@ -1528,7 +1641,17 @@ app.get('/index', async (req, res) => {
                   ? (' · Enriched with Daily as_of: ' + json.enrichmentDailyAsOf)
                   : '';
                 const dailyUpdNote = (json.enrichmentDailyUpdatedAt ? (' · Daily updated: ' + new Date(json.enrichmentDailyUpdatedAt).toLocaleString('da-DK')) : '');
+                const totUncBnQ = (json.totals && typeof json.totals.mcap_uncapped === 'number') ? (Number(json.totals.mcap_uncapped)/1e9) : null;
+                const totCapBnQ = (json.totals && typeof json.totals.mcap_capped === 'number') ? (Number(json.totals.mcap_capped)/1e9) : null;
                 document.getElementById('quarterlyMeta').textContent = 'As of: ' + (json.asOf || 'unknown') + ' · Updated: ' + lastUpdQ + ' · Rows: ' + rows.length + ' · AUM (' + (ccy || 'CCY') + '): ' + (aum ? aum.toLocaleString('en-DK') : 'n/a') + enrichNote + dailyUpdNote + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/quarterly_grouped">JSON</a>';
+                // Append totals as a badge line below
+                try {
+                  const qMetaEl = document.getElementById('quarterlyMeta');
+                  if (qMetaEl) {
+                    const totTxt = ' · Total MCAP uncapped: ' + (totUncBnQ!=null ? totUncBnQ.toFixed(2)+' bn' : 'n/a') + ' · capped: ' + (totCapBnQ!=null ? totCapBnQ.toFixed(2)+' bn' : 'n/a');
+                    qMetaEl.textContent = qMetaEl.textContent + totTxt;
+                  }
+                } catch(e) {}
                 // If enrichmentMixed, show a small alert as well to avoid mistaken conclusions
                 if (json.enrichmentMixed) {
                   const ab = document.getElementById('alertBar'); if (ab) {
@@ -1761,12 +1884,16 @@ app.get('/index', async (req, res) => {
                 }, 0);
                 const headroom = (0.40 - (sumOver5 || 0));
                 const lastUpdD = (json.lastUpdated ? new Date(json.lastUpdated).toLocaleString('da-DK') : 'unknown');
+                const totUncBn = (json.totals && typeof json.totals.mcap_uncapped === 'number') ? (Number(json.totals.mcap_uncapped)/1e9) : null;
+                const totCapBn = (json.totals && typeof json.totals.mcap_capped === 'number') ? (Number(json.totals.mcap_capped)/1e9) : null;
                 document.getElementById('dailyMeta').textContent = 'As of: ' + (json.asOf || 'unknown')
                   + ' · Updated: ' + lastUpdD
                   + ' · Rows: ' + rows.length
                   + ' · Sum(weight): ' + (totalW ? totalW.toFixed(6) : 'n/a')
                   + ' · >5% sum: ' + ((sumOver5 || 0) * 100).toFixed(2) + '%'
                   + ' · Headroom to 40%: ' + (headroom * 100).toFixed(2) + '%'
+                  + ' · Total MCAP uncapped: ' + (totUncBn!=null ? totUncBn.toFixed(2)+' bn' : 'n/a')
+                  + ' · capped: ' + (totCapBn!=null ? totCapBn.toFixed(2)+' bn' : 'n/a')
                   + ' · ' + '<a class="text-blue-600" href="/api/index/' + selected + '/constituents_grouped">JSON</a>';
                 const top = rows.slice(0, 25);
                 const region = regionFor(selected);
@@ -2702,33 +2829,65 @@ app.listen(PORT, () => {
   // Run FactSet worker batch once on startup to populate tables
   (async () => {
     try {
-      let pythonCmd = process.env.PYTHON || 'python3';
-      try {
-        const venvPy = path.join(__dirname, '.venv', 'bin', process.platform === 'win32' ? 'python.exe' : 'python');
-        if (fs.existsSync(venvPy)) pythonCmd = venvPy;
-      } catch { }
       const scriptPath = path.join(__dirname, 'workers', 'indexes', 'main.py');
+      const venvPy = (() => {
+        try { const p = path.join(__dirname, '.venv', 'bin', process.platform === 'win32' ? 'python.exe' : 'python'); return fs.existsSync(p) ? p : null; } catch { return null; }
+      })();
+      const candidates = [
+        process.env.PYTHON || '',
+        venvPy || '',
+        'python3',
+        'python',
+        '/usr/bin/python3',
+        '/usr/local/bin/python3'
+      ].filter(Boolean);
       const runs = [
         { region: 'CPH', indexId: process.env.CPH_INDEX_ID || 'KAXCAP' },
         { region: 'HEL', indexId: process.env.HEL_INDEX_ID || 'HELXCAP' }
         // Stockholm paused
       ];
+      console.log('[startup] Beginning FactSet batch for', runs.map(r => r.region + ':' + r.indexId).join(', '));
+      writeSchedulerLog('startup FactSet batch starting');
       for (const r of runs) {
-        await new Promise((resolve) => {
-          // Always run with --quarterly so both Daily and Quarterly are populated on boot
-          execFile(pythonCmd, [scriptPath, '--region', r.region, '--index-id', r.indexId, '--quarterly'], { env: process.env }, (error, stdout, stderr) => {
-            if (error) {
-              console.error('[startup] FactSet run error', r, error);
-              writeSchedulerLog(`startup FactSet error region=${r.region} index=${r.indexId}: ${error && error.message ? error.message : String(error)}`);
-            } else {
-              console.log('[startup] FactSet run ok', r, stdout);
-              writeSchedulerLog(`startup FactSet ok region=${r.region} index=${r.indexId}`);
-              _logUsageRunSupabase(r.indexId);
-            }
-            resolve();
+        let launched = false;
+        let lastErr = null;
+        for (const py of candidates) {
+          console.log('[startup] trying interpreter:', py, 'region:', r.region, 'index:', r.indexId, 'args: --quarterly');
+          const args = [scriptPath, '--region', r.region, '--index-id', r.indexId, '--quarterly'];
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((resolve) => {
+            execFile(py, args, { env: process.env }, (error, stdout, stderr) => {
+              if (error) {
+                lastErr = error;
+                const enoent = error && (error.code === 'ENOENT' || /not found|ENOENT/i.test(String(error.message || error)));
+                console.error('[startup] interpreter failed:', py, 'error:', error && error.message ? error.message : String(error));
+                if (stderr) console.error('[startup] stderr:', stderr);
+                // Try next candidate on ENOENT; otherwise stop for this run
+                if (enoent) {
+                  resolve();
+                } else {
+                  writeSchedulerLog(`startup FactSet error region=${r.region} index=${r.indexId}: ${error && error.message ? error.message : String(error)}`);
+                  resolve();
+                }
+              } else {
+                launched = true;
+                if (stderr) console.warn('[startup] stderr:', stderr);
+                console.log('[startup] FactSet run ok', r);
+                if (stdout) console.log('[startup] stdout:', stdout);
+                writeSchedulerLog(`startup FactSet ok region=${r.region} index=${r.indexId}`);
+                _logUsageRunSupabase(r.indexId);
+                resolve();
+              }
+            });
           });
-        });
+          if (launched) break;
+        }
+        if (!launched) {
+          console.error('[startup] all interpreter candidates failed for', r, 'last error:', lastErr && lastErr.message ? lastErr.message : String(lastErr));
+          writeSchedulerLog(`startup FactSet failed all interpreters region=${r.region} index=${r.indexId}: ${lastErr && lastErr.message ? lastErr.message : String(lastErr)}`);
+        }
       }
+      writeSchedulerLog('startup FactSet batch complete');
     } catch (e) {
       console.error('[startup] FactSet batch failed', e && e.message ? e.message : e);
       writeSchedulerLog(`startup FactSet batch failed: ${e && e.message ? e.message : String(e)}`);

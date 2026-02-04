@@ -26,6 +26,7 @@ WHITELIST_COLUMNS = {
     "price",
     "shares",
     "mcap",
+    "mcap_capped",
     "weight",
     "capped_weight",
     "delta_pct",
@@ -117,7 +118,7 @@ def upsert_index_constituents(df_status: pd.DataFrame) -> None:
         r.pop("index_id", None)
         r.pop("shares_capped", None)
         r.pop("mcap_uncapped", None)
-        r.pop("mcap_capped", None)
+        # Keep mcap_capped so we can surface capped totals in Daily
         # Normalize numbers
         for num_key in ("price", "shares", "mcap", "weight", "capped_weight", "delta_pct", "avg_daily_volume"):
             if num_key in r and r[num_key] is not None:

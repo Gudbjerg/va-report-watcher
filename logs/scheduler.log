@@ -198,3 +198,39 @@ Traceback (most recent call last):
 ModuleNotFoundError: No module named 'pandas'
 
 [2026-01-20T15:00:04.055Z] scheduled run complete (duration_ms=3440)
+[2026-01-26T10:37:09.630Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T10:37:14.635Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T10:38:13.042Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T10:38:17.198Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T10:44:34.010Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T10:44:38.046Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T10:46:06.112Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T10:46:09.932Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T10:54:49.038Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T10:54:53.391Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T11:01:35.280Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T11:01:39.333Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T11:09:11.854Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T11:09:16.055Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T12:35:12.769Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T12:35:17.335Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T13:22:48.953Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T13:22:53.464Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T13:32:23.672Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T13:32:28.453Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T13:42:24.767Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T13:42:28.894Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T13:51:38.876Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T13:51:42.928Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T16:39:43.014Z] startup FactSet batch starting
+[2026-01-26T16:39:50.222Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-01-26T16:39:55.574Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-01-26T16:39:55.575Z] startup FactSet batch complete
+[2026-02-04T09:05:21.028Z] startup FactSet batch starting
+[2026-02-04T09:05:28.565Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-02-04T09:05:33.463Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-02-04T09:05:33.463Z] startup FactSet batch complete
+[2026-02-04T09:06:04.276Z] startup FactSet batch starting
+[2026-02-04T09:06:08.717Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-02-04T09:06:12.904Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-02-04T09:06:12.905Z] startup FactSet batch complete

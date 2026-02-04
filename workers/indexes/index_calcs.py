@@ -46,13 +46,6 @@ def _normalize_input(df: pd.DataFrame) -> pd.DataFrame:
     except Exception:
         pass
 
-    if (d["mcap_uncapped"].sum() == 0.0) and ("omx_weight" in d.columns):
-        w = pd.to_numeric(d["omx_weight"], errors="coerce").fillna(0.0)
-        if w.sum() > 0:
-            d["mcap_uncapped"] = w
-            d["mcap_capped"] = w
-            d.loc[:, "shares"] = 1.0
-
     d["mcap"] = d["mcap_uncapped"]
 
     # Normalize issuer across share classes so A/B aggregate properly
@@ -236,13 +229,12 @@ def build_status(df_raw: pd.DataFrame, as_of: date, index_id: str, region: str, 
         issuers, params) if quarterly else _apply_daily_capping(issuers, params)
     out = _distribute_to_constituents(d, final_issuer_w)
 
-    # Current capped weights (from API if available; else from mcap_capped)
-    total_mcap_capped = (d["mcap_capped"].sum() or 1.0)
-    if "omx_weight_capped" in d.columns:
-        d["curr_weight_capped"] = (pd.to_numeric(
-            d["omx_weight_capped"], errors="coerce").fillna(0.0) / 100.0)
-    else:
-        d["curr_weight_capped"] = d["mcap_capped"] / total_mcap_capped
+    # Current capped weights strictly from MCAP (no API weights)
+    total_mcap_capped = float(d["mcap_capped"].sum() or 0.0)
+    d["curr_weight_capped"] = d.apply(lambda r: (
+        (float(r["mcap_capped"]) /
+         total_mcap_capped) if total_mcap_capped > 0 else 0.0
+    ), axis=1)
     # Attach current capped to output to compute delta
     out = out.join(d[["ticker", "curr_weight_capped"]
                      ].set_index("ticker"), on="ticker")
@@ -330,19 +322,17 @@ def build_quarterly_proforma(df_raw: pd.DataFrame, as_of: date, index_id: str, r
     # - Use UNCAPPED weight for ordering and preview context
     # - Use CAPPED current weight for delta calculations (user requirement)
     total_mcap_uncapped = d["mcap_uncapped"].sum() or 1.0
-    # Uncapped current weight (for ordering/context)
-    if "omx_weight" in d.columns:
-        d["curr_weight_uncapped"] = (pd.to_numeric(
-            d["omx_weight"], errors="coerce").fillna(0.0) / 100.0)
-    else:
-        d["curr_weight_uncapped"] = d["mcap_uncapped"] / total_mcap_uncapped
-    # Capped current weight (for delta)
-    if "omx_weight_capped" in d.columns:
-        d["curr_weight_capped"] = (pd.to_numeric(
-            d["omx_weight_capped"], errors="coerce").fillna(0.0) / 100.0)
-    else:
-        # If capped OMX weight is unavailable, fall back to uncapped
-        d["curr_weight_capped"] = d["curr_weight_uncapped"]
+    # Uncapped current weight (for ordering/context) — from MCAP only
+    d["curr_weight_uncapped"] = d.apply(lambda r: (
+        (float(r["mcap_uncapped"]) /
+         total_mcap_uncapped) if total_mcap_uncapped > 0 else 0.0
+    ), axis=1)
+    # Capped current weight (for delta) — from MCAP only
+    total_mcap_capped = float(d["mcap_capped"].sum() or 0.0)
+    d["curr_weight_capped"] = d.apply(lambda r: (
+        (float(r["mcap_capped"]) /
+         total_mcap_capped) if total_mcap_capped > 0 else 0.0
+    ), axis=1)
     out = dd.join(d[["ticker", "curr_weight_uncapped", "curr_weight_capped"]].set_index(
         "ticker"), on="ticker")
     # Delta should reflect movement from current CAPPED weight to target weight
