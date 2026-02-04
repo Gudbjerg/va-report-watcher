@@ -234,3 +234,15 @@ ModuleNotFoundError: No module named 'pandas'
 [2026-02-04T09:06:08.717Z] startup FactSet ok region=CPH index=KAXCAP
 [2026-02-04T09:06:12.904Z] startup FactSet ok region=HEL index=HELXCAP
 [2026-02-04T09:06:12.905Z] startup FactSet batch complete
+[2026-02-04T13:02:26.065Z] startup FactSet batch starting
+[2026-02-04T13:02:31.957Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-02-04T13:02:38.217Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-02-04T13:02:38.217Z] startup FactSet batch complete
+[2026-02-04T13:03:19.331Z] startup FactSet batch starting
+[2026-02-04T13:03:24.030Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-02-04T13:03:28.807Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-02-04T13:03:28.807Z] startup FactSet batch complete
+[2026-02-04T13:04:14.745Z] startup FactSet batch starting
+[2026-02-04T13:04:19.622Z] startup FactSet ok region=CPH index=KAXCAP
+[2026-02-04T13:04:23.762Z] startup FactSet ok region=HEL index=HELXCAP
+[2026-02-04T13:04:23.763Z] startup FactSet batch complete

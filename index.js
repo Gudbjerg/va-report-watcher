@@ -20,6 +20,45 @@ const app = express();
 app.use(express.json());
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
+// Optional Basic Auth gate (enabled only if both env vars are set)
+const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER || null;
+const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS || null;
+const BASIC_AUTH_REALM = process.env.BASIC_AUTH_REALM || 'Restricted';
+const BASIC_AUTH_ENABLED = Boolean(BASIC_AUTH_USER && BASIC_AUTH_PASS);
+const BASIC_AUTH_WHITELIST = new Set(['/healthz']);
+
+// Health endpoint (always public for uptime checks)
+app.get('/healthz', (req, res) => {
+  res.json({ ok: true, time: new Date().toISOString() });
+});
+
+// Apply Basic Auth before other routes
+app.use((req, res, next) => {
+  if (!BASIC_AUTH_ENABLED) return next();
+  try {
+    // Allow whitelisted paths without auth
+    if (BASIC_AUTH_WHITELIST.has(req.path)) return next();
+    const hdr = req.headers['authorization'] || '';
+    const parts = hdr.split(' ');
+    const scheme = parts[0];
+    const encoded = parts[1];
+    if (scheme !== 'Basic' || !encoded) {
+      res.set('WWW-Authenticate', `Basic realm="${BASIC_AUTH_REALM}"`);
+      return res.status(401).send('Authentication required');
+    }
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+    const idx = decoded.indexOf(':');
+    const user = idx >= 0 ? decoded.slice(0, idx) : decoded;
+    const pass = idx >= 0 ? decoded.slice(idx + 1) : '';
+    if (user === BASIC_AUTH_USER && pass === BASIC_AUTH_PASS) return next();
+    res.set('WWW-Authenticate', `Basic realm="${BASIC_AUTH_REALM}"`);
+    return res.status(401).send('Access denied');
+  } catch (e) {
+    res.set('WWW-Authenticate', `Basic realm="${BASIC_AUTH_REALM}"`);
+    return res.status(401).send('Authentication error');
+  }
+});
+
 // Simple in-memory run guard to prevent concurrent duplicate runs
 const activeRuns = new Map(); // key: indexId, value: boolean
 const lastRunTimes = new Map(); // key: indexId, value: timestamp ms
@@ -1294,9 +1333,7 @@ app.get('/index', async (req, res) => {
                 <span class="ml-auto"></span>
                 <div class="flex items-center gap-3">
                   <span id="refreshTicker" class="text-xs text-slate-500" aria-live="polite">auto-refresh in 20:00</span>
-                  <span id="quotaLeft" class="text-xs text-slate-500" aria-live="polite"></span>
-                  <span id="factsetLeft" class="text-xs text-slate-500" aria-live="polite"></span>
-                  <span id="monthLeft" class="text-xs text-slate-500" aria-live="polite"></span>
+                  <span id="remainingRefreshes" class="text-xs text-slate-500" aria-live="polite"></span>
                   <button id="rateDetailsBtn" class="text-xs underline text-slate-600">Headers</button>
                   <a href="/status" class="text-xs underline text-slate-600">Status</a>
                   <label class="text-xs text-slate-600 flex items-center gap-1"><input id="pauseRefresh" type="checkbox" class="align-middle"> Pause</label>
@@ -1595,20 +1632,19 @@ app.get('/index', async (req, res) => {
               nextRefreshSec = 1200;
             }
             async function loadUsage(){
-              try {
-                const r = await fetch('/api/usage'); const j = await r.json();
-                if (j && typeof j.remaining !== 'undefined') {
-                  const el = document.getElementById('quotaLeft'); if (el) el.textContent = 'quota left today: ' + j.remaining;
-                }
-              } catch(e) {}
+              let set = false;
+              // Prefer vendor day limits from headers snapshot
               try {
                 const r2 = await fetch('/api/rate'); const j2 = await r2.json();
                 const snap = j2 && j2.snapshot; if (snap) {
-                  const lim = (snap.limit!=null? Number(snap.limit): null);
-                  const rem = (snap.remaining!=null? Number(snap.remaining): null);
-                  const rst = snap.reset || '';
-                  const el2 = document.getElementById('factsetLeft'); if (el2) {
-                    el2.textContent = (rem!=null && lim!=null) ? ('FactSet remaining: ' + rem + '/' + lim) : 'FactSet remaining: n/a';
+                  const limDay = (snap.limit_day!=null? Number(snap.limit_day): null);
+                  const remDay = (snap.remaining_day!=null? Number(snap.remaining_day): null);
+                  const limAny = (snap.limit!=null? Number(snap.limit): null);
+                  const remAny = (snap.remaining!=null? Number(snap.remaining): null);
+                  const showLim = (limDay!=null ? limDay : limAny);
+                  const showRem = (remDay!=null ? remDay : remAny);
+                  const el = document.getElementById('remainingRefreshes'); if (el) {
+                    if (showRem!=null && showLim!=null) { el.textContent = 'remaining refreshes: ' + showRem + ' / ' + showLim; set = true; }
                   }
                   // Populate raw header details panel
                   const panel = document.getElementById('rateDetailsPanel');
@@ -1622,12 +1658,17 @@ app.get('/index', async (req, res) => {
                   }
                 }
               } catch(e) {}
-              try {
-                const r3 = await fetch('/api/usage/month'); const j3 = await r3.json();
-                if (j3 && typeof j3.remaining !== 'undefined') {
-                  const el3 = document.getElementById('monthLeft'); if (el3) el3.textContent = 'month left: ' + j3.remaining + ' / ' + j3.limit;
-                }
-              } catch(e) {}
+              // Fallback to internal usage counter when headers missing
+              if (!set) {
+                try {
+                  const r = await fetch('/api/usage'); const j = await r.json();
+                  if (j && typeof j.remaining !== 'undefined' && typeof j.limit !== 'undefined') {
+                    const el = document.getElementById('remainingRefreshes'); if (el) el.textContent = 'remaining refreshes: ' + j.remaining + ' / ' + j.limit;
+                  } else if (j && typeof j.remaining !== 'undefined') {
+                    const el = document.getElementById('remainingRefreshes'); if (el) el.textContent = 'remaining refreshes: ' + j.remaining;
+                  }
+                } catch(e) {}
+              }
             }
 
             async function loadMeta(){
@@ -2713,14 +2754,14 @@ app.get('/api/rate', async (req, res) => {
     // Ensure any sensitive header values are redacted before returning
     try {
       if (json && json.headers && typeof json.headers === 'object') {
-        const redactKeys = new Set(['set-cookie','cookie','authorization','x-datadirect-request-key','x-factset-api-request-key','x-api-key','api-key']);
+        const redactKeys = new Set(['set-cookie', 'cookie', 'authorization', 'x-datadirect-request-key', 'x-factset-api-request-key', 'x-api-key', 'api-key']);
         const safe = {};
-        for (const [k,v] of Object.entries(json.headers)) {
+        for (const [k, v] of Object.entries(json.headers)) {
           safe[k] = redactKeys.has(String(k).toLowerCase()) ? '[redacted]' : v;
         }
         json.headers = safe;
       }
-    } catch {}
+    } catch { }
     let fileMtime = null;
     try { const st = fs.statSync(file); fileMtime = st.mtime ? new Date(st.mtime).toISOString() : null; } catch { }
     return res.json({ ok: true, snapshot: json, fileMtime });
@@ -2749,7 +2790,7 @@ app.post('/api/rate/log', async (req, res) => {
       retry_after: snap.retry_after ?? null,
       headers: snap.headers || null
     };
-    try { await supabase.from(table).insert([row]); } catch(e) { /* ignore insert errors */ }
+    try { await supabase.from(table).insert([row]); } catch (e) { /* ignore insert errors */ }
     return res.json({ ok: true, persisted: true });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e && e.message ? e.message : String(e) });
@@ -2812,7 +2853,7 @@ app.get('/api/status', async (req, res) => {
 // Status page: simple dashboard view
 app.get('/status', async (req, res) => {
   try {
-    const r = await (await fetch('http://localhost:' + PORT + '/api/status')).json().catch(()=>({ ok:false }));
+    const r = await (await fetch('http://localhost:' + PORT + '/api/status')).json().catch(() => ({ ok: false }));
     const items = (r && r.status) ? r.status : [];
     res.send(`
       <html>
@@ -2823,13 +2864,13 @@ app.get('/status', async (req, res) => {
             <div class="bg-white rounded-xl shadow p-6">
               <h1 class="text-2xl font-bold mb-4">System Status</h1>
               <div class="grid md:grid-cols-2 gap-4">
-                ${items.map(it=>`
+                ${items.map(it => `
                   <div class="border rounded p-3">
                     <div class="font-semibold mb-1">${it.indexId}</div>
-                    <div class="text-sm text-slate-600">Daily as_of: ${it.asOfDaily||'n/a'} · Quarterly as_of: ${it.asOfQuarterly||'n/a'}</div>
+                    <div class="text-sm text-slate-600">Daily as_of: ${it.asOfDaily || 'n/a'} · Quarterly as_of: ${it.asOfQuarterly || 'n/a'}</div>
                     <div class="text-sm">Rows — daily: ${it.dailyCount} · issuers: ${it.issuersCount} · quarterly: ${it.quarterlyCount}</div>
-                    <div class="text-sm">Totals — daily uncapped: ${it.totalsDaily?.mcap_uncapped?.toLocaleString?.('en-DK')||'n/a'} · capped: ${it.totalsDaily?.mcap_capped?.toLocaleString?.('en-DK')||'n/a'}</div>
-                    <div class="text-sm">Totals — quarterly uncapped: ${it.totalsQuarterly?.mcap_uncapped?.toLocaleString?.('en-DK')||'n/a'} · capped: ${it.totalsQuarterly?.mcap_capped?.toLocaleString?.('en-DK')||'n/a'}</div>
+                    <div class="text-sm">Totals — daily uncapped: ${it.totalsDaily?.mcap_uncapped?.toLocaleString?.('en-DK') || 'n/a'} · capped: ${it.totalsDaily?.mcap_capped?.toLocaleString?.('en-DK') || 'n/a'}</div>
+                    <div class="text-sm">Totals — quarterly uncapped: ${it.totalsQuarterly?.mcap_uncapped?.toLocaleString?.('en-DK') || 'n/a'} · capped: ${it.totalsQuarterly?.mcap_capped?.toLocaleString?.('en-DK') || 'n/a'}</div>
                   </div>
                 `).join('')}
               </div>
@@ -2969,6 +3010,11 @@ app.listen(PORT, () => {
   updateEsundhed();
   // One-time backfill so month counter reflects earlier runs
   _backfillMonthUsageToSupabase();
+  // Optional: skip expensive FactSet startup batch when DISABLE_STARTUP_BATCH=true
+  if (process.env.DISABLE_STARTUP_BATCH === 'true') {
+    console.log('[startup] Skipping FactSet batch due to DISABLE_STARTUP_BATCH=true');
+    return;
+  }
   // Run FactSet worker batch once on startup to populate tables
   (async () => {
     try {

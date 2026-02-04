@@ -143,6 +143,38 @@ Notes:
 * Start command: `npm start`
 * Set `DISABLE_EMAIL=true` while migrating providers
 * UptimeRobot pings `/ping` every 5 min
+### 🛑 Skip Startup Batch (dev/testing)
+
+On each server start, the app normally triggers a one-time FactSet worker batch to populate tables (KAXCAP/HELXCAP). To avoid consuming vendor quota during local testing or rapid restarts, set:
+
+```
+DISABLE_STARTUP_BATCH=true
+```
+
+This keeps the server and UI running but skips the expensive startup batch. Scheduled runs still occur unless you also disable cron.
+
+### 🔒 Basic Auth (optional)
+
+You can enable a simple site-wide Basic Auth gate without changing routes or builds. It is off by default and activates only when both env vars are set:
+
+```
+BASIC_AUTH_USER=youruser
+BASIC_AUTH_PASS=yourpass
+# Optional: customize browser prompt
+BASIC_AUTH_REALM=MarketBuddy
+```
+
+Notes:
+- `/healthz` is always public for uptime checks.
+- When enabled, browsers will prompt once and then send credentials on subsequent requests (including assets and API calls).
+- For local testing:
+
+```bash
+PORT=3000 BASIC_AUTH_USER=alice BASIC_AUTH_PASS=secret npm start
+# Then visit http://localhost:3000 and enter alice / secret
+```
+
+On Render, add these env vars in the dashboard. Remove them to disable the gate.
 
 ---
 
